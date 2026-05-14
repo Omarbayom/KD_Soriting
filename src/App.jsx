@@ -217,6 +217,7 @@ export default function App() {
           <button className={page === "sorts" ? "tab active" : "tab"} onClick={() => setPage("sorts")}>Sorting Ideas</button>
           <button className={page === "search" ? "tab active" : "tab"} onClick={() => setPage("search")}>Searching Ideas</button>
           <button className={page === "bigO" ? "tab active" : "tab"} onClick={() => setPage("bigO")}>Growth & Speed</button>
+          <button className={page === "kd" ? "tab active" : "tab"} onClick={() => setPage("kd")}>KD Simulation</button>
         </nav>
       </header>
 
@@ -261,7 +262,7 @@ export default function App() {
 
               <label>Number of bars: <b>{barCount}</b></label>
               <input type="range" min="5" max="150" value={barCount} onChange={(e) => updateCount(e.target.value)} />
-              <small className="hint">For clear animation use 5–40 bars. For comparison, try 100–500 bars.</small>
+              <small className="hint">For clear animation use 5–40 bars. For comparison, try 100–150 bars.</small>
 
               <label>Delay between steps: <b>{delay} ms</b></label>
               <input type="range" min="40" max="900" step="20" value={delay} onChange={(e) => handleDelayChange(e.target.value)} />
@@ -338,6 +339,7 @@ export default function App() {
       {page === "sorts" && <SortingPage />}
       {page === "search" && <SearchingPage />}
       {page === "bigO" && <GrowthPage />}
+      {page === "kd" && <KDSimulationPage />}
     </div>
   );
 }
@@ -345,6 +347,297 @@ export default function App() {
 /* =========================
    Explanation pages
 ========================= */
+
+
+function KDSimulationPage() {
+  const [kdCount, setKdCount] = useState(14);
+  const [itemMin, setItemMin] = useState(1);
+  const [itemMax, setItemMax] = useState(30);
+  const [entrySeconds, setEntrySeconds] = useState(120);
+  const [sortedSearchSeconds, setSortedSearchSeconds] = useState(3);
+  const [unsortedCheckSeconds, setUnsortedCheckSeconds] = useState(8);
+  const [sortSecondsPerItemLog, setSortSecondsPerItemLog] = useState(6);
+  const [sortedCollectionMode, setSortedCollectionMode] = useState("after");
+  const [selectedKdIndex, setSelectedKdIndex] = useState(0);
+  const [kds, setKds] = useState(() => generateKDs(14, 1, 30));
+  const [sourceTags, setSourceTags] = useState({
+    kdCount: "Estimated",
+    entrySeconds: "Measured",
+    sortedSearchSeconds: "Estimated",
+    unsortedCheckSeconds: "Estimated",
+    sortSecondsPerItemLog: "Calculated"
+  });
+
+  const FIXED_PHASE_COUNT = 3;
+
+  function regenerate() {
+    const safeMin = Math.max(1, Math.min(Number(itemMin), Number(itemMax)));
+    const safeMax = Math.max(safeMin, Number(itemMax));
+    const safeCount = Math.max(1, Number(kdCount));
+    setKds(generateKDs(safeCount, safeMin, safeMax));
+    setSelectedKdIndex(0);
+  }
+
+  function updateSourceTag(key, value) {
+    setSourceTags((previous) => ({
+      ...previous,
+      [key]: value
+    }));
+  }
+
+  const simulation = useMemo(() => {
+    return calculateKDSimulation(kds, {
+      entrySeconds: Number(entrySeconds),
+      phaseCount: FIXED_PHASE_COUNT,
+      sortedSearchSeconds: Number(sortedSearchSeconds),
+      unsortedCheckSeconds: Number(unsortedCheckSeconds),
+      sortSecondsPerItemLog: Number(sortSecondsPerItemLog),
+      sortedCollectionMode
+    });
+  }, [kds, entrySeconds, sortedSearchSeconds, unsortedCheckSeconds, sortSecondsPerItemLog, sortedCollectionMode]);
+
+  const selectedKd = kds[selectedKdIndex] || kds[0];
+  const selectedResult = simulation.results[selectedKdIndex] || simulation.results[0];
+
+  return (
+    <main className="kd-page">
+      <section className="card kd-hero">
+        <div>
+          <h2>KD Manufacturing Simulation</h2>
+          <p>
+            Compare unsorted KDs versus sorted KDs across 3 phases. Phase 1 includes manufacturing entry. In “Sort after collecting”, sorting time is also added in Phase 1. Search starts in Phase 2, and found items are removed from the collection during Phase 2 and Phase 3.
+          </p>
+        </div>
+        <div className="kd-hero-stats">
+          <span><b>{kds.length}</b> KDs</span>
+          <span><b>{FIXED_PHASE_COUNT}</b> phases</span>
+          <span><b>{entrySeconds}</b>s entry/item</span>
+        </div>
+      </section>
+
+      <section className="kd-layout">
+        <aside className="card kd-controls">
+          <h3>Simulation settings</h3>
+
+          <div className="setting-line">
+            <label>Number of KDs: <b>{kdCount}</b></label>
+            <SettingSourceSelect value={sourceTags.kdCount} onChange={(value) => updateSourceTag("kdCount", value)} />
+          </div>
+          <input type="range" min="1" max="30" value={kdCount} onChange={(e) => setKdCount(Number(e.target.value))} />
+
+          <div className="kd-two-inputs">
+            <div>
+              <label>Min items</label>
+              <input type="number" min="1" max="30" value={itemMin} onChange={(e) => setItemMin(Number(e.target.value))} />
+            </div>
+            <div>
+              <label>Max items</label>
+              <input type="number" min="1" max="60" value={itemMax} onChange={(e) => setItemMax(Number(e.target.value))} />
+            </div>
+          </div>
+
+          <div className="setting-line">
+            <label>Manufacturing entry time / item: <b>{entrySeconds}s</b></label>
+            <SettingSourceSelect value={sourceTags.entrySeconds} onChange={(value) => updateSourceTag("entrySeconds", value)} />
+          </div>
+          <input type="range" min="10" max="300" step="10" value={entrySeconds} onChange={(e) => setEntrySeconds(Number(e.target.value))} />
+          <small className="hint">Phase 1 includes manufacturing entry. If mode is “Sort after collecting”, sorting time is also counted in Phase 1.</small>
+
+          <div className="kd-mode-box">
+            <h4>Sorted KD mode</h4>
+            <div className="mode-choice-grid">
+              <button
+                className={sortedCollectionMode === "after" ? "mode-choice active" : "mode-choice"}
+                onClick={() => setSortedCollectionMode("after")}
+              >
+                <b>Sort after collecting</b>
+                <span>Collect all items first, then add sorting time in phase 1.</span>
+              </button>
+              <button
+                className={sortedCollectionMode === "while" ? "mode-choice active" : "mode-choice"}
+                onClick={() => setSortedCollectionMode("while")}
+              >
+                <b>Sort while collecting</b>
+                <span>Put each item directly in its place, so no extra sorting time.</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="setting-line">
+            <label>Sorted search time / item: <b>{sortedSearchSeconds}s</b></label>
+            <SettingSourceSelect value={sourceTags.sortedSearchSeconds} onChange={(value) => updateSourceTag("sortedSearchSeconds", value)} />
+          </div>
+          <input type="range" min="1" max="20" value={sortedSearchSeconds} onChange={(e) => setSortedSearchSeconds(Number(e.target.value))} />
+          <small className="hint">Sorted KD search is O(1), so it uses a small fixed time per item.</small>
+
+          <div className="setting-line">
+            <label>Unsorted check time / comparison: <b>{unsortedCheckSeconds}s</b></label>
+            <SettingSourceSelect value={sourceTags.unsortedCheckSeconds} onChange={(value) => updateSourceTag("unsortedCheckSeconds", value)} />
+          </div>
+          <input type="range" min="1" max="30" value={unsortedCheckSeconds} onChange={(e) => setUnsortedCheckSeconds(Number(e.target.value))} />
+          <small className="hint">After an item is found, it is removed from the collection, so the remaining search set becomes smaller.</small>
+
+          <div className="setting-line">
+            <label>Sorting effort factor: <b>{sortSecondsPerItemLog}s</b></label>
+            <SettingSourceSelect value={sourceTags.sortSecondsPerItemLog} onChange={(value) => updateSourceTag("sortSecondsPerItemLog", value)} />
+          </div>
+          <input type="range" min="1" max="30" value={sortSecondsPerItemLog} onChange={(e) => setSortSecondsPerItemLog(Number(e.target.value))} />
+          <small className="hint">
+            Used only in “Sort after collecting”. Sorting is counted once in Phase 1.
+          </small>
+
+          <button className="primary kd-full-button" onClick={regenerate}>Generate New KD Data</button>
+        </aside>
+
+        <section className="kd-main">
+          <div className="kd-summary-grid">
+            <div className="card kd-summary sorted">
+              <small>Total sorted KD time</small>
+              <strong>{formatDuration(simulation.totalSortedSeconds)}</strong>
+              <span>{sortedCollectionMode === "after" ? "Entry counted in Phase 1; sorting also counted here if selected" : "Sorts while collecting, no extra sorting time"}</span>
+            </div>
+
+            <div className="card kd-summary unsorted">
+              <small>Total unsorted KD time</small>
+              <strong>{formatDuration(simulation.totalUnsortedSeconds)}</strong>
+              <span>Search is repeated in all 3 phases with removal after each found item</span>
+            </div>
+
+            <div className={`card kd-summary ${simulation.totalSavedSeconds >= 0 ? "saving" : "loss"}`}>
+              <small>{simulation.totalSavedSeconds >= 0 ? "Time saved by sorting" : "Extra time due to sorting"}</small>
+              <strong>{formatDuration(Math.abs(simulation.totalSavedSeconds))}</strong>
+              <span>{simulation.totalSavedSeconds >= 0 ? "Sorted process is faster overall" : "Sorting is not worth it with current settings"}</span>
+            </div>
+          </div>
+
+          <div className="card kd-break-even">
+            <h3>Breaking point</h3>
+            {simulation.breakEvenItems ? (
+              <p>
+                With the current settings, sorting becomes faster starting from around
+                <b> {simulation.breakEvenItems} items per KD</b>.
+              </p>
+            ) : (
+              <p>
+                With the current settings, sorting does not become faster within the tested range.
+              </p>
+            )}
+            <div className="break-even-bar">
+              <span style={{ width: `${Math.min(100, ((simulation.breakEvenItems || 30) / 30) * 100)}%` }} />
+            </div>
+          </div>
+
+          <section className="card kd-list-card">
+            <div className="kd-section-head">
+              <div>
+                <h3>KD list</h3>
+                <p>Select any KD to see its item codes, names, and phase timing.</p>
+              </div>
+              <span className="pill">Sorted search = O(1)</span>
+            </div>
+
+            <div className="kd-list">
+              {simulation.results.map((result, index) => (
+                <button
+                  key={result.kd.id}
+                  className={selectedKdIndex === index ? "kd-chip active" : "kd-chip"}
+                  onClick={() => setSelectedKdIndex(index)}
+                >
+                  <b>{result.kd.id}</b>
+                  <span>{result.kd.items.length} items</span>
+                  <em>{result.savedSeconds >= 0 ? `saves ${formatDurationShort(result.savedSeconds)}` : `loses ${formatDurationShort(Math.abs(result.savedSeconds))}`}</em>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {selectedKd && selectedResult && (
+            <section className="kd-detail-grid">
+              <div className="card kd-visual">
+                <div className="kd-section-head">
+                  <div>
+                    <h3>{selectedKd.id} item visualization</h3>
+                    <p>Each item has a code and name. Sorted KD is arranged by item code.</p>
+                  </div>
+                  <span className="pill">{selectedKd.items.length} items</span>
+                </div>
+
+                <div className="kd-compare-boxes">
+                  <div>
+                    <h4>Unsorted KD</h4>
+                    <div className="kd-item-grid">
+                      {selectedKd.items.map((item) => (
+                        <div key={item.code} className="kd-item-card unsorted-item">
+                          <b>{item.code}</b>
+                          <span>{item.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4>Sorted KD</h4>
+                    <div className="kd-item-grid">
+                      {[...selectedKd.items].sort((a, b) => a.code.localeCompare(b.code)).map((item) => (
+                        <div key={item.code} className="kd-item-card sorted-item">
+                          <b>{item.code}</b>
+                          <span>{item.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card kd-phase-card">
+                <h3>3-phase timing for {selectedKd.id}</h3>
+                <div className="phase-table-wrap">
+                  <table className="phase-table">
+                    <thead>
+                      <tr>
+                        <th>Phase</th>
+                        <th>Unsorted</th>
+                        <th>Sorted</th>
+                        <th>Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedResult.phases.map((phase) => (
+                        <tr key={phase.phase}>
+                          <td>Phase {phase.phase}</td>
+                          <td>{formatDurationShort(phase.unsortedSeconds)}</td>
+                          <td>{formatDurationShort(phase.sortedSeconds)}</td>
+                          <td>{phase.note}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="kd-total-line">
+                  <span>Unsorted total: <b>{formatDuration(selectedResult.unsortedSeconds)}</b></span>
+                  <span>Sorted total: <b>{formatDuration(selectedResult.sortedSeconds)}</b></span>
+                </div>
+              </div>
+            </section>
+          )}
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function SettingSourceSelect({ value, onChange }) {
+  return (
+    <select className="source-select" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="Estimated">Estimated</option>
+      <option value="Calculated">Calculated</option>
+      <option value="Measured">Measured</option>
+      <option value="Assumed">Assumed</option>
+      <option value="Other">Other</option>
+    </select>
+  );
+}
 
 function SortingPage() {
   const [selected, setSelected] = useState("bubble");
@@ -1000,6 +1293,173 @@ function formatMs(value) {
   if (value < 1) return `${value.toFixed(4)} ms`;
   return `${value.toFixed(2)} ms`;
 }
+
+
+function generateKDs(kdCount, minItems, maxItems) {
+  const itemNames = [
+    "Valve", "Sensor", "Bracket", "Cable", "Cover", "Tube", "Screw", "Panel",
+    "Motor", "Filter", "Board", "Connector", "Seal", "Holder", "Switch",
+    "Pump", "Clamp", "Wheel", "Pin", "Adapter", "Plate", "Ring", "Cap",
+    "Guide", "Handle", "Spring", "Bearing", "Block", "Frame", "Housing"
+  ];
+
+  return Array.from({ length: kdCount }, (_, kdIndex) => {
+    const count = randomBetween(minItems, maxItems);
+    const items = Array.from({ length: count }, (_, itemIndex) => {
+      const randomCodeNumber = randomBetween(100, 999);
+      const name = itemNames[(itemIndex + kdIndex * 3) % itemNames.length];
+
+      return {
+        code: `ITM-${randomCodeNumber}`,
+        name: `${name} ${itemIndex + 1}`
+      };
+    });
+
+    return {
+      id: `KD-${String(kdIndex + 1).padStart(2, "0")}`,
+      items
+    };
+  });
+}
+
+function calculateKDSimulation(kds, settings) {
+  const results = kds.map((kd) => calculateSingleKD(kd, settings));
+  const totalSortedSeconds = results.reduce((sum, result) => sum + result.sortedSeconds, 0);
+  const totalUnsortedSeconds = results.reduce((sum, result) => sum + result.unsortedSeconds, 0);
+  const totalSavedSeconds = totalUnsortedSeconds - totalSortedSeconds;
+  const breakEvenItems = findKDBreakEven(settings);
+
+  return {
+    results,
+    totalSortedSeconds,
+    totalUnsortedSeconds,
+    totalSavedSeconds,
+    breakEvenItems
+  };
+}
+
+function calculateSingleKD(kd, settings) {
+  const itemCount = kd.items.length;
+  const phases = [];
+  const phaseCount = settings.phaseCount || 3;
+
+  const entryOnce = itemCount * settings.entrySeconds;
+  const unsortedSearchPerPhase = calculateUnsortedSearchSeconds(itemCount, settings.unsortedCheckSeconds);
+  const sortedSearchPerPhase = calculateSortedSearchSeconds(itemCount, settings.sortedSearchSeconds);
+  const sortingSeconds = settings.sortedCollectionMode === "while"
+    ? 0
+    : calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog);
+
+  let sortedSeconds = 0;
+  let unsortedSeconds = 0;
+
+  for (let phase = 1; phase <= phaseCount; phase++) {
+    let unsortedPhaseSeconds = 0;
+    let sortedPhaseSeconds = 0;
+    let note = "";
+
+    if (phase === 1) {
+      // Phase 1 is the collection/manufacturing entry phase.
+      // Unsorted KD only pays entry time.
+      // Sorted KD pays entry time + sorting time only if the selected mode is "Sort after collecting".
+      unsortedPhaseSeconds = entryOnce;
+      sortedPhaseSeconds = entryOnce + sortingSeconds;
+
+      note = settings.sortedCollectionMode === "after"
+        ? "Manufacturing entry; sorted KD also pays sorting cost after collection"
+        : "Manufacturing entry only; items are placed directly in sorted position";
+    } else {
+      // Phase 2 and Phase 3 are search/extraction phases.
+      // After each found item, it is removed from the collection.
+      unsortedPhaseSeconds = unsortedSearchPerPhase;
+      sortedPhaseSeconds = sortedSearchPerPhase;
+      note = "Search only; each found item is removed from the collection";
+    }
+
+    unsortedSeconds += unsortedPhaseSeconds;
+    sortedSeconds += sortedPhaseSeconds;
+
+    phases.push({
+      phase,
+      unsortedSeconds: unsortedPhaseSeconds,
+      sortedSeconds: sortedPhaseSeconds,
+      note
+    });
+  }
+
+  return {
+    kd,
+    itemCount,
+    sortedSeconds,
+    unsortedSeconds,
+    savedSeconds: unsortedSeconds - sortedSeconds,
+    phases
+  };
+}
+
+function calculateUnsortedSearchSeconds(itemCount, checkSeconds) {
+  // Items are searched one by one, and each found item is removed.
+  // Remaining collection size goes from N down to 1.
+  let totalAverageChecks = 0;
+
+  for (let remainingItems = itemCount; remainingItems >= 1; remainingItems--) {
+    totalAverageChecks += (remainingItems + 1) / 2;
+  }
+
+  return totalAverageChecks * checkSeconds;
+}
+
+function calculateSortedSearchSeconds(itemCount, sortedSearchSeconds) {
+  // Sorted search is treated as O(1): fixed small time per item.
+  // Each found item is also removed, but access remains constant-time.
+  return itemCount * sortedSearchSeconds;
+}
+
+function calculateSortingSeconds(itemCount, secondsPerItemLog) {
+  if (itemCount <= 1) return 0;
+  return itemCount * Math.log2(itemCount) * secondsPerItemLog;
+}
+
+function findKDBreakEven(settings) {
+  for (let itemCount = 1; itemCount <= 100; itemCount++) {
+    const kd = {
+      id: "TEST",
+      items: Array.from({ length: itemCount }, (_, index) => ({
+        code: `ITM-${index}`,
+        name: `Item ${index}`
+      }))
+    };
+
+    const result = calculateSingleKD(kd, settings);
+    if (result.savedSeconds > 0) {
+      return itemCount;
+    }
+  }
+  return null;
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.round(totalSeconds);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${remainingSeconds}s`;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
+function formatDurationShort(totalSeconds) {
+  const seconds = Math.round(totalSeconds);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
+function randomBetween(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 
 function bubbleSortBenchmark(input) {
   const arr = [...input];
