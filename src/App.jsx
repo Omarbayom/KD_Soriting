@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 export default function App() {
   const [page, setPage] = useState("try");
@@ -10,12 +10,16 @@ export default function App() {
   const [array, setArray] = useState(() => makeArray(12));
   const [active, setActive] = useState([]);
   const [found, setFound] = useState(null);
+  const [mergeView, setMergeView] = useState(null);
   const [target, setTarget] = useState(50);
   const [message, setMessage] = useState("Choose what you want to demonstrate, then press Start.");
   const [stats, setStats] = useState({ checks: 0, changes: 0, steps: 0, time: 0 });
   const [comparisonResults, setComparisonResults] = useState([]);
+  const [isRunning, setIsRunning] = useState(false);
   const runningRef = useRef(false);
   const delayRef = useRef(220);
+  const finishRequestedRef = useRef(false);
+  const finishWaitResolverRef = useRef(null);
 
   const maxValue = useMemo(() => Math.max(...array, 1), [array]);
 
@@ -25,6 +29,7 @@ export default function App() {
     setArray(next);
     setActive([]);
     setFound(null);
+    setMergeView(null);
     setStats({ checks: 0, changes: 0, steps: 0, time: 0 });
     setComparisonResults([]);
     setMessage("New random bars generated.");
@@ -46,60 +51,120 @@ export default function App() {
     if (runningRef.current) return;
 
     runningRef.current = true;
+    finishRequestedRef.current = false;
+    setIsRunning(true);
     setActive([]);
     setFound(null);
+    setMergeView(null);
     setStats({ checks: 0, changes: 0, steps: 0, time: 0 });
 
     const startTime = performance.now();
     let result;
 
-    if (mode === "sort") {
-      if (sortAlgo === "bubble") result = bubbleSortSteps([...array]);
-      if (sortAlgo === "insertion") result = insertionSortSteps([...array]);
-      if (sortAlgo === "merge") result = mergeSortSteps([...array]);
+    try {
+      if (mode === "sort") {
+        if (sortAlgo === "bubble") result = bubbleSortSteps([...array]);
+        if (sortAlgo === "insertion") result = insertionSortSteps([...array]);
+        if (sortAlgo === "merge") result = mergeSortSteps([...array]);
 
-      await playSteps(result.steps, true);
-      setArray(result.finalArray);
-      setActive(result.finalArray.map((_, position) => position));
-      setMessage(`${getLabel(sortAlgo)} finished. The bars are now ordered from shortest to tallest.`);
-    } else {
-      let workArray = [...array];
+        await playSteps(result.steps, true);
+        setArray(result.finalArray);
+        setActive(result.finalArray.map((_, position) => position));
+        setMergeView(
+          sortAlgo === "merge"
+            ? { type: "complete", merged: result.finalArray.map((_, position) => position) }
+            : null
+        );
+        setMessage(
+          finishRequestedRef.current
+            ? `${getLabel(sortAlgo)} finished instantly. Final ordered result is now shown.`
+            : `${getLabel(sortAlgo)} finished. The bars are now ordered from shortest to tallest.`
+        );
+      } else {
+        setMergeView(null);
+        let workArray = [...array];
 
-      if (searchAlgo === "binary") {
-        workArray = [...array].sort((a, b) => a - b);
-        setArray(workArray);
-        setMessage("Fast Search needs the bars ordered first, so the app ordered them automatically.");
-        await wait(Math.max(250, delayRef.current));
+        if (searchAlgo === "binary") {
+          workArray = [...array].sort((a, b) => a - b);
+          setArray(workArray);
+          setMessage("Fast Search needs the bars ordered first, so the app ordered them automatically.");
+          await waitForAnimationStep(Math.max(250, delayRef.current));
+        }
+
+        if (searchAlgo === "linear") result = linearSearchSteps(workArray, Number(target));
+        if (searchAlgo === "binary") result = binarySearchSteps(workArray, Number(target));
+
+        await playSteps(result.steps, false);
+        setFound(result.foundPosition);
+        setActive([]);
+        setMessage(
+          result.foundPosition === -1
+            ? `${target} was not found.`
+            : `${target} was found at position ${result.foundPosition + 1}.`
+        );
       }
 
-      if (searchAlgo === "linear") result = linearSearchSteps(workArray, Number(target));
-      if (searchAlgo === "binary") result = binarySearchSteps(workArray, Number(target));
+      const endTime = performance.now();
 
-      await playSteps(result.steps, false);
-      setFound(result.foundPosition);
-      setActive([]);
-      setMessage(result.foundPosition === -1 ? `${target} was not found.` : `${target} was found at position ${result.foundPosition + 1}.`);
+      setStats({
+        checks: result.checks,
+        changes: result.changes || 0,
+        steps: result.steps.length,
+        time: endTime - startTime
+      });
+    } finally {
+      runningRef.current = false;
+      finishRequestedRef.current = false;
+      finishWaitResolverRef.current = null;
+      setIsRunning(false);
     }
-
-    const endTime = performance.now();
-
-    setStats({
-      checks: result.checks,
-      changes: result.changes || 0,
-      steps: result.steps.length,
-      time: endTime - startTime
-    });
-
-    runningRef.current = false;
   }
 
   async function playSteps(steps, isSort) {
     for (const step of steps) {
+      if (finishRequestedRef.current) break;
       if (isSort && step.array) setArray(step.array);
       setActive(step.active || []);
+      setMergeView(step.mergeView || null);
       if (typeof step.foundPosition === "number") setFound(step.foundPosition);
       setMessage(step.text || "Running...");
-      await wait(delayRef.current);
+      await waitForAnimationStep(delayRef.current);
+      if (finishRequestedRef.current) break;
+    }
+  }
+
+  function waitForAnimationStep(ms) {
+    if (finishRequestedRef.current) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (finishWaitResolverRef.current === finish) {
+          finishWaitResolverRef.current = null;
+        }
+        resolve();
+      };
+
+      const timer = setTimeout(finish, ms);
+      finishWaitResolverRef.current = finish;
+    });
+  }
+
+  function finishCurrentDemo() {
+    if (!runningRef.current) {
+      setMessage("No demo is currently running. Press Start Demo first.");
+      return;
+    }
+
+    finishRequestedRef.current = true;
+    setMessage("Finishing the current demo and showing the final result...");
+
+    if (finishWaitResolverRef.current) {
+      finishWaitResolverRef.current();
     }
   }
 
@@ -148,6 +213,7 @@ export default function App() {
       setMessage(`Comparison completed using ${repeatCount} repeated runs per method. Average time is more reliable than one single run.`);
       setArray([...original].sort((a, b) => a - b));
       setActive([]);
+      setMergeView(null);
       setFound(null);
       return;
     }
@@ -192,6 +258,7 @@ export default function App() {
     setMessage(`Search comparison completed using ${repeatCount.toLocaleString()} repeated runs per method. Average time is more reliable than one single run.`);
     setArray(sortedArray);
     setActive([]);
+    setMergeView(null);
     setFound(results[1].foundPosition);
   }
 
@@ -200,6 +267,7 @@ export default function App() {
     const sorted = [...array].sort((a, b) => a - b);
     setArray(sorted);
     setActive(sorted.map((_, position) => position));
+    setMergeView(null);
     setFound(null);
     setMessage("Bars ordered instantly. This is useful before showing Fast Search.");
   }
@@ -269,10 +337,11 @@ export default function App() {
             </section>
 
             <div className="button-grid">
-              <button className="primary" onClick={start}>Start Demo</button>
-              <button onClick={() => generate()}>New Bars</button>
-              <button className="success full" onClick={sortInstantly}>Order Bars Instantly</button>
-              <button className="compare-button full" onClick={runComparison}>{mode === "sort" ? "Compare All Sorts" : "Compare Search Methods"}</button>
+              <button className="primary" onClick={start} disabled={isRunning}>{isRunning ? "Running..." : "Start Demo"}</button>
+              <button onClick={() => generate()} disabled={isRunning}>New Bars</button>
+              <button className="warning full" onClick={finishCurrentDemo}>Finish Current Demo</button>
+              <button className="success full" onClick={sortInstantly} disabled={isRunning}>Order Bars Instantly</button>
+              <button className="compare-button full" onClick={runComparison} disabled={isRunning}>{mode === "sort" ? "Compare All Sorts" : "Compare Search Methods"}</button>
             </div>
           </aside>
 
@@ -281,25 +350,167 @@ export default function App() {
               <div className="visual-header">
                 <div>
                   <h2>Live Visualization</h2>
-                  <p>Blue = normal bar, yellow = being checked, green = found or finished.</p>
+                  <p>Blue = normal bar, yellow = being checked, green = found or finished. In Merge Sort, L and R show the two pointers and “Put” shows the selected value being written.</p>
                 </div>
                 <span className="pill">{mode === "sort" ? getLabel(sortAlgo) : getLabel(searchAlgo)}</span>
               </div>
 
-              <div className="bars">
+              {mode === "sort" && sortAlgo === "merge" && mergeView && (
+                <div className="merge-status-panel">
+                  {typeof mergeView.leftPointerValue === "number" && (
+                    <span><b>L pointer</b> {mergeView.leftPointerValue}</span>
+                  )}
+                  {typeof mergeView.rightPointerValue === "number" && (
+                    <span><b>R pointer</b> {mergeView.rightPointerValue}</span>
+                  )}
+                  {typeof mergeView.selectedValue === "number" && (
+                    <span className="selected"><b>Selected to put</b> {mergeView.selectedValue}</span>
+                  )}
+                  {typeof mergeView.writeIndex === "number" && (
+                    <span><b>Write position</b> {mergeView.writeIndex + 1}</span>
+                  )}
+                  {typeof mergeView.displacedValue === "number" && mergeView.displacedValue !== mergeView.selectedValue && (
+                    <span className="displaced"><b>Old value at that place</b> {mergeView.displacedValue}</span>
+                  )}
+                </div>
+              )}
+
+              {mode === "sort" && sortAlgo === "merge" && array.length <= 45 && (
+                <div className="merge-temp-visual">
+                  <div className="merge-temp-group left-temp">
+                    <strong>Copied Left group</strong>
+                    <div className="merge-temp-values">
+                      {(mergeView?.leftTemp || []).map((value, tempIndex) => {
+                        const isPointer = mergeView?.leftTempIndex === tempIndex;
+                        const isSelected = mergeView?.selectedSide === "left" && mergeView?.selectedTempIndex === tempIndex;
+                        const isDisplaced = mergeView?.displacedTempSide === "left" && mergeView?.displacedTempIndex === tempIndex;
+
+                        return (
+                          <span key={`left-temp-${tempIndex}`} className={[
+                            "merge-temp-chip",
+                            isPointer ? "pointer" : "",
+                            isSelected ? "selected" : "",
+                            isDisplaced ? "displaced" : ""
+                          ].filter(Boolean).join(" ")}>
+                            {isPointer && <em>L</em>}
+                            {value}
+                            {isDisplaced && !isSelected && <small>still here</small>}
+                          </span>
+                        );
+                      })}
+                      {(mergeView?.leftTemp || []).length === 0 && (
+                        <span className="merge-temp-empty">Empty for now</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="merge-temp-group right-temp">
+                    <strong>Copied Right group</strong>
+                    <div className="merge-temp-values">
+                      {(mergeView?.rightTemp || []).map((value, tempIndex) => {
+                        const isPointer = mergeView?.rightTempIndex === tempIndex;
+                        const isSelected = mergeView?.selectedSide === "right" && mergeView?.selectedTempIndex === tempIndex;
+                        const isDisplaced = mergeView?.displacedTempSide === "right" && mergeView?.displacedTempIndex === tempIndex;
+
+                        return (
+                          <span key={`right-temp-${tempIndex}`} className={[
+                            "merge-temp-chip",
+                            isPointer ? "pointer" : "",
+                            isSelected ? "selected" : "",
+                            isDisplaced ? "displaced" : ""
+                          ].filter(Boolean).join(" ")}>
+                            {isPointer && <em>R</em>}
+                            {value}
+                            {isDisplaced && !isSelected && <small>still here</small>}
+                          </span>
+                        );
+                      })}
+                      {(mergeView?.rightTemp || []).length === 0 && (
+                        <span className="merge-temp-empty">Empty for now</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className={typeof mergeView?.displacedValue === "number" && mergeView.displacedValue !== mergeView.selectedValue ? "" : "merge-temp-note"}>
+                    {typeof mergeView?.displacedValue === "number" && mergeView.displacedValue !== mergeView.selectedValue ? (
+                      <>Before putting <b>{mergeView.selectedValue}</b>, this bar position contained <b>{mergeView.displacedValue}</b>. It is not lost; it is still waiting in the copied {mergeView.displacedTempSide === "left" ? "left" : "right"} group above.</>
+                    ) : (
+                      <>The copied left/right groups stay visible here. When a merge step starts, the values will appear here even before they are written back to the bars.</>
+                    )}
+                  </p>
+                </div>
+              )}
+
+              {mode === "sort" && sortAlgo === "merge" && mergeView && array.length <= 45 && typeof mergeView?.selectedValue === "number" && (
+                <div className="merge-action-row">
+                  <span className="merge-action-chip pick-action">
+                    Pick <b>{mergeView.selectedValue}</b> from {mergeView.selectedSide === "left" ? "left copy" : "right copy"}
+                  </span>
+                  <span className="merge-action-arrow">→</span>
+                  <span className="merge-action-chip put-action">
+                    Put into position <b>{typeof mergeView.writeIndex === "number" ? mergeView.writeIndex + 1 : "-"}</b>
+                  </span>
+                  {typeof mergeView.displacedValue === "number" && mergeView.displacedValue !== mergeView.selectedValue && (
+                    <span className="merge-action-chip safe-action">
+                      Old <b>{mergeView.displacedValue}</b> is safe in the copied {mergeView.displacedTempSide === "left" ? "left" : "right"} group
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className={`bars ${mode === "sort" && sortAlgo === "merge" && array.length <= 45 ? "merge-bars" : ""}`}>
                 {array.map((value, position) => {
                   const isActive = active.includes(position);
                   const isFound = found === position;
-                  const height = Math.max(20, (value / maxValue) * 300);
+                  const isMergeLeft = mergeView?.leftGroup?.includes(position);
+                  const isMergeRight = mergeView?.rightGroup?.includes(position);
+                  const isMergeRange = mergeView?.range?.includes(position);
+                  const isMergeWrite = mergeView?.writeIndex === position;
+                  const isMergeLeftPointer = mergeView?.leftPointer === position;
+                  const isMergeRightPointer = mergeView?.rightPointer === position;
+                  const isMergeSelected = mergeView?.selectedIndex === position;
+                  const isMerged = mergeView?.merged?.includes(position);
+                  const shouldShowMergeBadges = sortAlgo === "merge" && mode === "sort" && mergeView && array.length <= 45;
+                  const shouldShowValueLabels = array.length <= 25;
+                  const maxBarHeight = shouldShowMergeBadges ? 270 : 300;
+                  const height = Math.max(20, (value / maxValue) * maxBarHeight);
+
+                  const barClass = [
+                    "bar",
+                    isFound ? "found" : "",
+                    isActive ? "active" : "",
+                    isMergeRange ? "merge-range" : "",
+                    isMergeLeft ? "merge-left" : "",
+                    isMergeRight ? "merge-right" : "",
+                    isMergeLeftPointer ? "merge-left-pointer" : "",
+                    isMergeRightPointer ? "merge-right-pointer" : "",
+                    isMergeSelected ? "merge-selected" : "",
+                    isMergeWrite ? "merge-write" : "",
+                    isMerged ? "merge-done" : ""
+                  ].filter(Boolean).join(" ");
+
+                  const columnClass = [
+                    "bar-column",
+                    isMergeSelected ? "merge-selected-column" : "",
+                    isMergeWrite ? "merge-write-column" : ""
+                  ].filter(Boolean).join(" ");
+
+                  const numberClass = "bar-number";
 
                   return (
-                    <div className="bar-column" key={position}>
+                    <div className={columnClass} key={position} style={{ "--bar-height": `${height}px` }}>
+                      {shouldShowMergeBadges && (isMergeLeftPointer || isMergeRightPointer) && (
+                        <div className="merge-pointer-badges">
+                          {isMergeLeftPointer && <span className="merge-pointer-label left-pointer">L</span>}
+                          {isMergeRightPointer && <span className="merge-pointer-label right-pointer">R</span>}
+                        </div>
+                      )}
                       <div
-                        className={isFound ? "bar found" : isActive ? "bar active" : "bar"}
+                        className={barClass}
                         style={{ height }}
                         title={`Position ${position + 1}: ${value}`}
                       />
-                      {array.length <= 25 && <span>{value}</span>}
+                      {shouldShowValueLabels && <span className={numberClass}>{value}</span>}
                     </div>
                   );
                 })}
@@ -349,23 +560,1124 @@ export default function App() {
 ========================= */
 
 
+
+
+
+
+
+function KDJourneySimulation({
+  selectedKd,
+  entrySeconds,
+  sortedSearchSeconds,
+  unsortedCheckSeconds,
+  sortSecondsPerItemLog
+}) {
+  const [approach, setApproach] = useState("unsorted");
+  const [stepIndex, setStepIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const journeys = useMemo(() => buildKDJourney(selectedKd, {
+    entrySeconds: Number(entrySeconds),
+    sortedSearchSeconds: Number(sortedSearchSeconds),
+    unsortedCheckSeconds: Number(unsortedCheckSeconds),
+    sortSecondsPerItemLog: Number(sortSecondsPerItemLog)
+  }), [selectedKd, entrySeconds, sortedSearchSeconds, unsortedCheckSeconds, sortSecondsPerItemLog]);
+
+  const currentJourney = journeys[approach] || journeys.unsorted;
+  const currentStep = currentJourney.steps[stepIndex] || currentJourney.steps[0];
+  const progress = currentJourney.steps.length <= 1
+    ? 100
+    : (stepIndex / (currentJourney.steps.length - 1)) * 100;
+
+  useEffect(() => {
+    setStepIndex(0);
+    setIsPlaying(false);
+  }, [approach, selectedKd?.id]);
+
+  useEffect(() => {
+    if (!isPlaying) return undefined;
+
+    const stepDelay = currentStep?.holdMs || 850;
+
+    const timer = setTimeout(() => {
+      setStepIndex((previous) => {
+        if (previous >= currentJourney.steps.length - 1) {
+          setIsPlaying(false);
+          return previous;
+        }
+        return previous + 1;
+      });
+    }, stepDelay);
+
+    return () => clearTimeout(timer);
+  }, [isPlaying, stepIndex, currentJourney.steps.length, currentStep?.holdMs]);
+
+  function changeApproach(nextApproach) {
+    setApproach(nextApproach);
+  }
+
+  function previousStep() {
+    setIsPlaying(false);
+    setStepIndex((previous) => Math.max(0, previous - 1));
+  }
+
+  function nextStep() {
+    setIsPlaying(false);
+    setStepIndex((previous) => Math.min(currentJourney.steps.length - 1, previous + 1));
+  }
+
+  function restartJourney() {
+    setStepIndex(0);
+    setIsPlaying(false);
+  }
+
+  const visibleAreas = getJourneyVisibleAreas(currentStep);
+  const journeyAreas = [
+    {
+      key: "source",
+      node: (
+        <JourneyBox
+          title="Outside / waiting"
+          subtitle={currentStep.sourceSubtitle || "Before entering the KD"}
+          items={currentStep.sourceItems}
+          emptyText="Nothing outside"
+          activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
+          tone="source"
+          scanActive={currentStep.scanSource}
+        />
+      )
+    },
+    {
+      key: "search",
+      node: (
+        <JourneyBox
+          title="Search area"
+          subtitle={currentStep.searchSubtitle}
+          items={currentStep.searchItems}
+          emptyText="No active search"
+          activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
+          tone="search"
+          scanActive={currentStep.scanSearch || currentStep.searchingOnly}
+        />
+      )
+    },
+    {
+      key: "kd",
+      node: (
+        <JourneyBox
+          title="KD box"
+          subtitle={currentStep.kdSubtitle || "Current KD content"}
+          items={currentStep.kdItems}
+          emptyText="KD box is empty"
+          activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
+          tone="kd"
+          scanActive={currentStep.scanKd || currentStep.searchingOnly}
+        />
+      )
+    },
+    {
+      key: "device",
+      node: (
+        <JourneyBox
+          title="Device"
+          subtitle={currentStep.deviceSubtitle || "Production output"}
+          items={currentStep.deviceItems || []}
+          emptyText="No item in device yet"
+          activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
+          tone="device"
+        />
+      )
+    }
+  ].filter((area) => visibleAreas.includes(area.key));
+
+  return (
+    <section className="card kd-journey-card">
+      <div className="kd-section-head">
+        <div>
+          <h3>KD journey from start to end</h3>
+          <p>One KD, 17 items, and three approaches: unsorted, collect then sort, and collect while sorting.</p>
+        </div>
+        <span className="pill">{currentJourney.totalLabel}</span>
+      </div>
+
+      <div className="journey-approach-grid">
+        {Object.values(journeys).map((journey) => (
+          <button
+            key={journey.key}
+            className={approach === journey.key ? "journey-approach active" : "journey-approach"}
+            onClick={() => changeApproach(journey.key)}
+          >
+            <b>{journey.title}</b>
+            <span>{journey.short}</span>
+            <strong>{formatDuration(journey.totalSeconds)}</strong>
+          </button>
+        ))}
+      </div>
+
+      <div className="journey-controls-row">
+        <button onClick={restartJourney}>Restart</button>
+        <button onClick={previousStep}>Previous</button>
+        <button className="primary" onClick={() => setIsPlaying((playing) => !playing)}>
+          {isPlaying ? "Pause journey" : "Play journey"}
+        </button>
+        <button onClick={nextStep}>Next</button>
+        <span>Step {stepIndex + 1} / {currentJourney.steps.length}</span>
+      </div>
+
+      <div className="journey-progress-bar">
+        <span style={{ width: `${progress}%` }} />
+      </div>
+
+      <div className="journey-step-card">
+        <div>
+          <small>{currentStep.phase}</small>
+          <h4>{currentStep.title}</h4>
+          <p>{currentStep.description}</p>
+        </div>
+        <div className="journey-time-box">
+          <span>Step time</span>
+          <b>{formatDurationShort(currentStep.timeAdded)}</b>
+          <span>Cumulative</span>
+          <b>{formatDuration(currentStep.cumulativeSeconds)}</b>
+        </div>
+      </div>
+
+      <div className="journey-stage compact-phase-stage">
+        {journeyAreas.map((area, index) => (
+          <React.Fragment key={area.key}>
+            {area.node}
+            {index < journeyAreas.length - 1 && (
+              <JourneyArrow
+                label={getJourneyArrowLabel(currentStep, area.key, journeyAreas[index + 1].key)}
+                icon={getJourneyArrowIcon(currentStep, area.key, journeyAreas[index + 1].key)}
+              />
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+
+      <div className="journey-note-grid">
+        <div>
+          <b>Phase 1</b>
+          <span>The hover scan selects the next outside item, then it moves into the KD box.</span>
+        </div>
+        <div>
+          <b>Phase 2</b>
+          <span>The KD is emptied first, then every search is shown: checked items, found item, then return to KD.</span>
+        </div>
+        <div>
+          <b>Phase 3</b>
+          <span>Each item is searched inside the KD first, selected, then sent from KD to the device.</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function JourneyArrow({ icon, label }) {
+  return (
+    <div className="journey-arrow-column">
+      <span>{icon}</span>
+      <b>{label}</b>
+    </div>
+  );
+}
+
+function getJourneyVisibleAreas(step) {
+  const phase = step?.phase || "";
+
+  if (phase.includes("Start")) return ["source", "kd"];
+  if (phase.includes("Sort after collecting")) return ["kd"];
+  if (phase.includes("Phase 1")) return ["source", "kd"];
+  if (phase.includes("Phase 2")) return ["search", "kd"];
+  if (phase.includes("Phase 3")) return ["kd", "device"];
+  if (phase.includes("End")) return ["device"];
+
+  return ["source", "kd"];
+}
+
+function getJourneyArrowLabel(step, from, to) {
+  if (step.searchingOnly) return step.searchLabel || "Searching...";
+  if (from === "source" && to === "kd") return step.moveLabel || "Out → KD";
+  if (from === "search" && to === "kd") return step.resultLabel || "Found → KD";
+  if (from === "kd" && to === "device") return step.deviceLabel || "KD → Device";
+  return step.resultLabel || step.moveLabel || "Move";
+}
+
+function getJourneyArrowIcon(step, from, to) {
+  if (step.searchingOnly) return "🔍";
+  if (from === "kd" && to === "device") return step.deviceIcon || "➡️";
+  return step.icon || "→";
+}
+
+function JourneyBox({ title, subtitle, items, emptyText, activeKey, tone, scanActive = false }) {
+  const hasSearchPath = scanActive && items.some((item) => ["checked", "found"].includes(item.journeyStatus));
+
+  return (
+    <div className={`journey-box ${tone}${hasSearchPath ? " scan-active" : ""}`}>
+      <div className="journey-box-head">
+        <b>{title}</b>
+        <span>{subtitle}</span>
+      </div>
+      <div className="journey-item-grid">
+        {items.length === 0 ? (
+          <em>{emptyText}</em>
+        ) : (
+          items.map((item, index) => {
+            const itemKey = item.uid || `${item.code}-${item.name || "item"}-${index}`;
+            const statusClass = item.journeyStatus ? ` ${item.journeyStatus}` : "";
+            const activeClass = activeKey === itemKey ? " active" : "";
+
+            return (
+              <span
+                key={`${itemKey}-${item.journeyStatus || "normal"}-${index}`}
+                className={`journey-item${statusClass}${activeClass}`}
+                title={item.name || item.code}
+                style={{ "--scan-order": index, "--scan-total": items.length }}
+              >
+                {item.code}
+                {item.journeyTag && <small>{item.journeyTag}</small>}
+              </span>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function tagJourneyItem(item, journeyStatus, journeyTag) {
+  return {
+    ...item,
+    journeyStatus,
+    journeyTag
+  };
+}
+
+function getSlowUnsortedTargetIndex(remainingItems, iterationIndex = 0) {
+  if (remainingItems <= 1) return 0;
+
+  // This fixed pattern makes the unsorted demo visibly search through several items.
+  // It avoids the wrong visual where the target is always the first chip.
+  const slowSearchPattern = [5, 4, 6, 3, 7, 2, 8, 1, 9, 0];
+  const preferredIndex = slowSearchPattern[iterationIndex % slowSearchPattern.length];
+
+  return Math.min(remainingItems - 1, preferredIndex);
+}
+
+function removeItemAtIndex(items, removeIndex) {
+  return items.filter((_, index) => index !== removeIndex);
+}
+
+function getSearchPreviewItems(targetItem, poolItems, isSortedApproach) {
+  if (!targetItem) return poolItems;
+
+  const targetKey = targetItem.uid || targetItem.code;
+  const targetIndex = Math.max(0, poolItems.findIndex((item) => (item.uid || item.code) === targetKey));
+
+  if (isSortedApproach) {
+    const otherItems = poolItems.filter((item) => (item.uid || item.code) !== targetKey);
+    const quickChecks = otherItems.slice(0, Math.min(2, otherItems.length));
+    const waitingAfterFound = otherItems.slice(quickChecks.length, quickChecks.length + 4);
+
+    return [
+      ...quickChecks.map((item) => tagJourneyItem(item, "checked", "quick check")),
+      tagJourneyItem(targetItem, "found", "FOUND"),
+      ...waitingAfterFound.map((item) => tagJourneyItem(item, "waiting", "not needed"))
+    ];
+  }
+
+  const missedBeforeFound = poolItems.slice(0, targetIndex);
+  const waitingAfterFound = poolItems.slice(targetIndex + 1, targetIndex + 5);
+
+  return [
+    ...missedBeforeFound.map((item) => tagJourneyItem(item, "checked", "no match")),
+    tagJourneyItem(targetItem, "found", "FOUND"),
+    ...waitingAfterFound.map((item) => tagJourneyItem(item, "waiting", "waiting"))
+  ];
+}
+
+function getJourneyScanHoldMs(checksNeeded = 1) {
+  // The visual hover reaches one chip after another. Keep auto-play on the
+  // search step long enough so the KD/device insertion cannot happen before
+  // the FOUND highlight appears.
+  const safeChecks = Math.max(1, Number(checksNeeded) || 1);
+  return Math.min(6200, 1700 + safeChecks * 480);
+}
+
+function buildKDJourney(kd, settings) {
+  const items = kd?.items || [];
+  const sortedItems = [...items].sort((a, b) => a.code.localeCompare(b.code));
+  const itemCount = items.length;
+  const creationTotal = itemCount * settings.entrySeconds;
+  const unsortedPhase2Total = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
+  const unsortedPhase3Total = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
+  const sortedSearchTotal = calculateSortedSearchSeconds(itemCount, settings.sortedSearchSeconds);
+  const sortAfterSeconds = calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog);
+  const sortWhileSeconds = itemCount * settings.sortSecondsPerItemLog;
+
+  const totals = {
+    unsorted: creationTotal + unsortedPhase2Total + unsortedPhase3Total,
+    sortedAfter: creationTotal + sortAfterSeconds + sortedSearchTotal + sortedSearchTotal,
+    sortedWhile: creationTotal + sortWhileSeconds + sortedSearchTotal + sortedSearchTotal
+  };
+
+  const bestTotal = Math.min(totals.unsorted, totals.sortedAfter, totals.sortedWhile);
+
+  return {
+    unsorted: {
+      key: "unsorted",
+      title: "Unsorted",
+      short: "Collect normally, then search item by item",
+      totalSeconds: totals.unsorted,
+      totalLabel: totals.unsorted === bestTotal ? "Best time" : "Slowest search",
+      steps: buildJourneySteps({
+        approach: "unsorted",
+        items,
+        sortedItems,
+        creationSeconds: settings.entrySeconds,
+        sortedSearchSeconds: settings.sortedSearchSeconds,
+        unsortedCheckSeconds: settings.unsortedCheckSeconds,
+        sortAfterSeconds: 0,
+        sortWhileSecondsPerItem: 0
+      })
+    },
+    sortedAfter: {
+      key: "sortedAfter",
+      title: "Sorted: collect then sort",
+      short: "Collect first, then sort the KD once",
+      totalSeconds: totals.sortedAfter,
+      totalLabel: totals.sortedAfter === bestTotal ? "Best time" : "Pays sorting once",
+      steps: buildJourneySteps({
+        approach: "sortedAfter",
+        items,
+        sortedItems,
+        creationSeconds: settings.entrySeconds,
+        sortedSearchSeconds: settings.sortedSearchSeconds,
+        unsortedCheckSeconds: settings.unsortedCheckSeconds,
+        sortAfterSeconds,
+        sortWhileSecondsPerItem: 0
+      })
+    },
+    sortedWhile: {
+      key: "sortedWhile",
+      title: "Sorted: collect while sorting",
+      short: "Place each item directly in order while collecting",
+      totalSeconds: totals.sortedWhile,
+      totalLabel: totals.sortedWhile === bestTotal ? "Best time" : "Sorted during creation",
+      steps: buildJourneySteps({
+        approach: "sortedWhile",
+        items,
+        sortedItems,
+        creationSeconds: settings.entrySeconds,
+        sortedSearchSeconds: settings.sortedSearchSeconds,
+        unsortedCheckSeconds: settings.unsortedCheckSeconds,
+        sortAfterSeconds: 0,
+        sortWhileSecondsPerItem: settings.sortSecondsPerItemLog
+      })
+    }
+  };
+}
+
+function buildJourneySteps({
+  approach,
+  items,
+  sortedItems,
+  creationSeconds,
+  sortedSearchSeconds,
+  unsortedCheckSeconds,
+  sortAfterSeconds,
+  sortWhileSecondsPerItem
+}) {
+  let cumulativeSeconds = 0;
+  const steps = [];
+  const isSortedApproach = approach !== "unsorted";
+  const titleByApproach = {
+    unsorted: "Unsorted journey",
+    sortedAfter: "Sorted journey: collect then sort",
+    sortedWhile: "Sorted journey: collect while sorting"
+  };
+
+  const pushStep = (step) => {
+    steps.push({
+      sourceItems: [],
+      searchItems: [],
+      kdItems: [],
+      deviceItems: [],
+      activeItem: null,
+      timeAdded: 0,
+      cumulativeSeconds,
+      icon: "→",
+      moveLabel: "Move",
+      resultLabel: "Result",
+      deviceIcon: "→",
+      deviceLabel: "Device",
+      deviceSubtitle: "Production output",
+      searchSubtitle: "No search yet",
+      scanSource: false,
+      scanSearch: false,
+      scanKd: false,
+      holdMs: 850,
+      ...step
+    });
+  };
+
+  pushStep({
+    phase: "Start",
+    title: titleByApproach[approach],
+    description: "The KD starts outside the process. Press Play or Next to follow the full journey.",
+    sourceItems: items,
+    moveLabel: "Ready",
+    resultLabel: "KD empty"
+  });
+
+  let outsidePool = [...items];
+  let collectedItems = [];
+
+  for (let collectionStep = 0; collectionStep < items.length; collectionStep += 1) {
+    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(outsidePool.length, collectionStep);
+    const item = outsidePool[targetIndex];
+    const phase1ScanPool = [...outsidePool];
+    const scanChecks = targetIndex + 1;
+    const collectedBeforeInsert = [...collectedItems];
+    const kdItemsBeforeInsert = approach === "sortedWhile"
+      ? [...collectedBeforeInsert].sort((a, b) => a.code.localeCompare(b.code))
+      : collectedBeforeInsert;
+
+    pushStep({
+      phase: "Phase 1: KD Creation",
+      title: `Search outside for ${item.code}`,
+      description: `The hover scan checks ${scanChecks} outside chip${scanChecks === 1 ? "" : "s"}. ${item.code} is only highlighted as FOUND here; it is not inserted into the KD box yet.`,
+      sourceItems: getSearchPreviewItems(item, phase1ScanPool, false),
+      kdItems: kdItemsBeforeInsert,
+      activeItem: item,
+      timeAdded: 0,
+      cumulativeSeconds,
+      icon: "🔍",
+      moveLabel: "Scanning outside",
+      resultLabel: "Searching...",
+      searchLabel: "Scanning...",
+      searchingOnly: true,
+      sourceSubtitle: `Outside scan: ${scanChecks} check${scanChecks === 1 ? "" : "s"}`,
+      searchSubtitle: "Phase 1 collection scan",
+      kdSubtitle: collectedBeforeInsert.length ? "KD content before insertion" : "KD is still empty",
+      scanSource: true,
+      holdMs: getJourneyScanHoldMs(scanChecks)
+    });
+
+    const timeAdded = creationSeconds + (approach === "sortedWhile" ? sortWhileSecondsPerItem : 0);
+    cumulativeSeconds += timeAdded;
+
+    collectedItems = [...collectedItems, item];
+    outsidePool = removeItemAtIndex(outsidePool, targetIndex);
+
+    const kdItems = approach === "sortedWhile"
+      ? [...collectedItems].sort((a, b) => a.code.localeCompare(b.code))
+      : collectedItems;
+
+    pushStep({
+      phase: "Phase 1: KD Creation",
+      title: approach === "sortedWhile" ? `Insert ${item.code} in sorted position` : `Insert ${item.code} into the KD box`,
+      description: approach === "sortedWhile"
+        ? `${item.code} was found first, and now it enters the KD box in its sorted position. Time = ${creationSeconds}s creation + ${sortWhileSecondsPerItem}s sorted placement.`
+        : `${item.code} was found first, and only now it moves from outside into the KD box.`,
+      sourceItems: outsidePool,
+      kdItems,
+      activeItem: item,
+      timeAdded,
+      cumulativeSeconds,
+      icon: "📥",
+      moveLabel: "Found → KD",
+      resultLabel: approach === "sortedWhile" ? "Inserted sorted" : "Inserted into KD",
+      sourceSubtitle: "Outside items remaining",
+      kdSubtitle: "KD content after insertion",
+      searchSubtitle: "Insertion after search"
+    });
+  }
+
+  if (approach === "sortedAfter") {
+    cumulativeSeconds += sortAfterSeconds;
+    pushStep({
+      phase: "Phase 1: Sort after collecting",
+      title: "Sort the collected KD once",
+      description: `All items are already collected. Now the KD is sorted once before checking starts. Sorting time = ${formatDurationShort(sortAfterSeconds)}.`,
+      kdItems: sortedItems,
+      timeAdded: sortAfterSeconds,
+      cumulativeSeconds,
+      icon: "↕️",
+      moveLabel: "Sort",
+      resultLabel: "KD ordered",
+      searchSubtitle: "No search yet"
+    });
+  }
+
+  let phase2Pool = isSortedApproach ? [...sortedItems] : [...collectedItems];
+  let phase2ReturnedItems = [];
+
+  pushStep({
+    phase: "Phase 2: KD Check",
+    title: "Empty the KD before checking",
+    description: "The KD box is emptied first. Items are searched one by one, and every found item is returned to the KD box.",
+    searchItems: phase2Pool,
+    kdItems: [],
+    timeAdded: 0,
+    cumulativeSeconds,
+    icon: "📤",
+    moveLabel: "Empty KD",
+    resultLabel: "Ready to check",
+    searchSubtitle: "Items waiting for checking"
+  });
+
+  const phase2Iterations = phase2Pool.length;
+  for (let searchStep = 0; searchStep < phase2Iterations; searchStep += 1) {
+    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(phase2Pool.length, searchStep);
+    const item = phase2Pool[targetIndex];
+    const remainingBeforeSearch = phase2Pool.length;
+    const checksNeeded = targetIndex + 1;
+    const timeAdded = isSortedApproach
+      ? sortedSearchSeconds
+      : checksNeeded * unsortedCheckSeconds;
+    cumulativeSeconds += timeAdded;
+
+    pushStep({
+      phase: "Phase 2: KD Check",
+      title: `Search for ${item.code}`,
+      description: isSortedApproach
+        ? `${item.code} is reached quickly because the temporary search list is sorted.`
+        : `The operator does not get ${item.code} immediately. The hover scan checks ${checksNeeded} item${checksNeeded === 1 ? "" : "s"} from the unsorted list before the green FOUND chip appears.`,
+      searchItems: getSearchPreviewItems(item, phase2Pool, isSortedApproach),
+      kdItems: phase2ReturnedItems,
+      activeItem: item,
+      timeAdded,
+      cumulativeSeconds,
+      icon: "🔍",
+      moveLabel: isSortedApproach ? "Fast search" : "Search item by item",
+      resultLabel: "Searching...",
+      searchLabel: isSortedApproach ? "Fast search" : "Checking...",
+      searchingOnly: true,
+      searchSubtitle: isSortedApproach ? "Sorted search path" : `Unsorted scan: ${checksNeeded}/${remainingBeforeSearch} checks`,
+      kdSubtitle: "Found items already returned",
+      holdMs: getJourneyScanHoldMs(checksNeeded)
+    });
+
+    phase2Pool = removeItemAtIndex(phase2Pool, targetIndex);
+    phase2ReturnedItems = [...phase2ReturnedItems, item];
+
+    pushStep({
+      phase: "Phase 2: KD Check",
+      title: `Return ${item.code} to the KD box`,
+      description: `${item.code} is now found, so it is put back into the KD box. The next item will be searched from the remaining search area.`,
+      searchItems: phase2Pool,
+      kdItems: phase2ReturnedItems,
+      activeItem: item,
+      timeAdded: 0,
+      cumulativeSeconds,
+      icon: "📥",
+      moveLabel: "Found",
+      resultLabel: "Found → KD",
+      searchSubtitle: "Items still waiting for checking",
+      kdSubtitle: "Returned found items"
+    });
+  }
+
+  let phase3Pool = isSortedApproach ? [...sortedItems] : [...phase2ReturnedItems];
+  let deviceItems = [];
+  const phase3Iterations = phase3Pool.length;
+
+  for (let productionStep = 0; productionStep < phase3Iterations; productionStep += 1) {
+    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(phase3Pool.length, productionStep);
+    const item = phase3Pool[targetIndex];
+    const remainingBeforeDevice = phase3Pool.length;
+    const checksNeeded = targetIndex + 1;
+    const timeAdded = isSortedApproach
+      ? sortedSearchSeconds
+      : checksNeeded * unsortedCheckSeconds;
+    cumulativeSeconds += timeAdded;
+
+    pushStep({
+      phase: "Phase 3: Production",
+      title: `Search inside KD for ${item.code}`,
+      description: isSortedApproach
+        ? `${item.code} is selected quickly inside the sorted KD before moving to the device.`
+        : `The KD is still unordered, so the hover scan checks ${checksNeeded} item${checksNeeded === 1 ? "" : "s"} inside the KD before ${item.code} is found.`,
+      kdItems: getSearchPreviewItems(item, phase3Pool, isSortedApproach),
+      deviceItems,
+      activeItem: item,
+      timeAdded,
+      cumulativeSeconds,
+      icon: "🔎",
+      moveLabel: "Search in KD",
+      resultLabel: "Found in KD",
+      searchLabel: isSortedApproach ? "Fast KD search" : "Searching KD...",
+      searchingOnly: true,
+      deviceIcon: "🔎",
+      deviceLabel: "Searching...",
+      deviceSubtitle: "Items already sent to device",
+      kdSubtitle: isSortedApproach ? "Sorted KD search path" : `Unsorted KD scan: ${checksNeeded}/${remainingBeforeDevice} checks`,
+      searchSubtitle: `Remaining KD items: ${remainingBeforeDevice}`,
+      holdMs: getJourneyScanHoldMs(checksNeeded)
+    });
+
+    phase3Pool = removeItemAtIndex(phase3Pool, targetIndex);
+    deviceItems = [...deviceItems, item];
+
+    pushStep({
+      phase: "Phase 3: Production",
+      title: `Send ${item.code} from KD to the device`,
+      description: `${item.code} leaves the KD box and becomes part of the device. The KD now contains only the remaining items.`,
+      kdItems: phase3Pool,
+      deviceItems,
+      activeItem: item,
+      timeAdded: 0,
+      cumulativeSeconds,
+      icon: "➡️",
+      moveLabel: "Selected",
+      resultLabel: "Remaining KD",
+      deviceIcon: "➡️",
+      deviceLabel: "KD → Device",
+      deviceSubtitle: "Items already sent to device",
+      kdSubtitle: "Remaining KD content",
+      searchSubtitle: `Remaining KD items: ${phase3Pool.length}`
+    });
+  }
+
+  pushStep({
+    phase: "End",
+    title: "Journey finished",
+    description: `The full journey is complete. The selected items have moved from KD to device. Total time for this approach is ${formatDuration(cumulativeSeconds)}.`,
+    kdItems: [],
+    deviceItems,
+    timeAdded: 0,
+    cumulativeSeconds,
+    icon: "✅",
+    moveLabel: "Complete",
+    resultLabel: "KD empty",
+    deviceIcon: "✅",
+    deviceLabel: "Completed",
+    deviceSubtitle: "Device received the items",
+    searchSubtitle: "Finished"
+  });
+
+  return steps;
+}
+
+function KDSimulationFlow({
+  selectedKd,
+  selectedResult,
+  scenario,
+  setScenario,
+  activeStep,
+  setActiveStep,
+  sortedCollectionMode,
+  entrySeconds,
+  sortedSearchSeconds,
+  unsortedCheckSeconds,
+  sortSecondsPerItemLog
+}) {
+  const steps = getIntegratedKDFlowSteps(scenario, sortedCollectionMode);
+  const currentStep = steps[activeStep] || steps[0];
+  const phaseDurations = selectedResult?.phases || [];
+  const previewItems = selectedKd?.items?.slice(0, 6) || [];
+
+  return (
+    <section className="card integrated-flow-card">
+      <div className="kd-section-head">
+        <div>
+          <h3>Visual process flow</h3>
+          <p>Connect the process flow with the phase timing for the selected KD.</p>
+        </div>
+
+        <div className="integrated-flow-toggle">
+          <button
+            className={scenario === "unsorted" ? "active" : ""}
+            onClick={() => { setScenario("unsorted"); setActiveStep(0); }}
+          >
+            Unsorted KD
+          </button>
+          <button
+            className={scenario === "sorted" ? "active" : ""}
+            onClick={() => { setScenario("sorted"); setActiveStep(0); }}
+          >
+            Sorted KD
+          </button>
+        </div>
+      </div>
+
+      <div className="integrated-flow-layout">
+        <aside className="integrated-flow-steps">
+          {steps.map((step, index) => (
+            <button
+              key={step.title}
+              className={activeStep === index ? "integrated-step active" : "integrated-step"}
+              onClick={() => setActiveStep(index)}
+            >
+              <span>{step.icon}</span>
+              <div>
+                <b>{step.title}</b>
+                <small>{step.short}</small>
+              </div>
+            </button>
+          ))}
+        </aside>
+
+        <div className="integrated-flow-main">
+          <div className="integrated-current-step">
+            <div>
+              <h4>{currentStep.title}</h4>
+              <p>{currentStep.description}</p>
+            </div>
+            <span className="pill">{currentStep.badge}</span>
+          </div>
+
+          <div className={`integrated-flow-stage ${scenario} phase-only-stage`}>
+            {getIntegratedStageNodes(activeStep, scenario).map((node, index, nodes) => (
+              <React.Fragment key={`${node.title}-${index}`}>
+                <div className={`integrated-node active ${node.tone || ""}`}>
+                  <span>{node.icon}</span>
+                  <b>{node.title}</b>
+                  {node.subtitle && <small>{node.subtitle}</small>}
+                </div>
+                {index < nodes.length - 1 && <div className="integrated-arrow active">→</div>}
+              </React.Fragment>
+            ))}
+          </div>
+
+          <div className="integrated-flow-bottom">
+            <div className="flow-mini-items">
+              <h4>Item location in {selectedKd?.id || "KD"}</h4>
+              <div className="flow-mini-item-grid">
+                {previewItems.map((item, index) => {
+                  const itemState = getFlowMiniItemState(index, activeStep, scenario);
+
+                  return (
+                    <div
+                      key={item.uid || `${item.code}-${index}`}
+                      className={itemState.className}
+                      style={{ "--scan-order": index }}
+                    >
+                      <b>{item.code}</b>
+                      <span>{itemState.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flow-mini-device-status">
+                {activeStep >= 3
+                  ? "Phase 3: selected items leave the KD and go to the device."
+                  : "Before Phase 3, checked items are still inside the KD or returned back to it."}
+              </div>
+            </div>
+
+            <div className="flow-phase-times">
+              <h4>Same numbers from the timing table</h4>
+              {phaseDurations.map((phase) => (
+                <div key={phase.phase} className="phase-time-line">
+                  <b>{getKDPhaseName(phase.phase)}</b>
+                  <span>Unsorted: {formatDurationShort(phase.unsortedSeconds)}</span>
+                  <span>Sorted: {formatDurationShort(phase.sortedSeconds)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+
+
+          <div className="integrated-flow-message">
+            <b>Explanation:</b> {currentStep.explain}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function buildKDItemFlowRows(kd, settings) {
+  if (!kd || !kd.items || kd.items.length === 0) return [];
+
+  const itemCount = kd.items.length;
+  const sortingTotal = settings.scenario === "sorted"
+    ? settings.sortedCollectionMode === "after"
+      ? calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog)
+      : itemCount * settings.sortSecondsPerItemLog
+    : 0;
+  const sortingPerItem = itemCount > 0 ? sortingTotal / itemCount : 0;
+
+  let cumulativeSeconds = 0;
+
+  return kd.items.map((item, index) => {
+    const remainingBeforeSearch = itemCount - index;
+    const creationSeconds = settings.entrySeconds;
+    const sortingSeconds = settings.scenario === "sorted" ? sortingPerItem : 0;
+
+    const checkSeconds = settings.scenario === "unsorted"
+      ? ((remainingBeforeSearch + 1) / 2) * settings.unsortedCheckSeconds
+      : settings.sortedSearchSeconds;
+
+    const productionSeconds = settings.scenario === "unsorted"
+      ? ((itemCount + 1) / 2) * settings.unsortedCheckSeconds
+      : settings.sortedSearchSeconds;
+
+    const phase1Seconds = creationSeconds + sortingSeconds;
+    const totalSeconds = phase1Seconds + checkSeconds + productionSeconds;
+
+    cumulativeSeconds += totalSeconds;
+
+    return {
+      sequence: index + 1,
+      item,
+      remainingBeforeSearch,
+      creationSeconds,
+      sortingSeconds,
+      phase1Seconds,
+      checkSeconds,
+      productionSeconds,
+      totalSeconds,
+      cumulativeSeconds
+    };
+  });
+}
+
+function getIntegratedStageNodes(activeStep, scenario) {
+  const sortedTone = scenario === "sorted" ? "good" : "warn";
+
+  if (activeStep === 0) {
+    return [
+      { icon: "📦", title: "KD box", subtitle: scenario === "sorted" ? "Ready to organize" : "Random order", tone: sortedTone }
+    ];
+  }
+
+  if (activeStep === 1) {
+    return [
+      { icon: "📥", title: "Outside", subtitle: "Waiting items", tone: "warn" },
+      { icon: "🏗️", title: "Phase 1", subtitle: "KD Creation" },
+      { icon: "📦", title: "KD box", subtitle: scenario === "sorted" ? "Collected sorted" : "Collected" , tone: sortedTone }
+    ];
+  }
+
+  if (activeStep === 2) {
+    return [
+      { icon: "🔍", title: "Search area", subtitle: scenario === "sorted" ? "Fast lookup" : "Item-by-item" , tone: "warn" },
+      { icon: scenario === "sorted" ? "✅" : "🔎", title: "Phase 2", subtitle: "KD Check" },
+      { icon: "📦", title: "KD box", subtitle: "Found items returned", tone: "good" }
+    ];
+  }
+
+  if (activeStep === 3) {
+    return [
+      { icon: "📦", title: "KD box", subtitle: "Select item", tone: sortedTone },
+      { icon: "🏭", title: "Phase 3", subtitle: "Production" },
+      { icon: "🧩", title: "Device", subtitle: "Receives item", tone: "good" }
+    ];
+  }
+
+  return [
+    { icon: "⏱️", title: scenario === "sorted" ? "Time Saved" : "Time Used", subtitle: scenario === "sorted" ? "Less search" : "Repeated search", tone: sortedTone }
+  ];
+}
+
+function getFlowMiniItemState(index, activeStep, scenario) {
+  const sortedClass = scenario === "sorted" ? " sorted" : "";
+  const foundIndex = scenario === "sorted" ? 1 : 3;
+
+  if (activeStep === 0) {
+    return {
+      className: `flow-mini-item${sortedClass}`,
+      label: "inside KD"
+    };
+  }
+
+  if (activeStep === 1) {
+    if (index < foundIndex) {
+      return {
+        className: `flow-mini-item checked scan-card${sortedClass}`,
+        label: "hover checked"
+      };
+    }
+
+    if (index === foundIndex) {
+      return {
+        className: `flow-mini-item found scan-card${sortedClass}`,
+        label: "FOUND → KD"
+      };
+    }
+
+    return {
+      className: `flow-mini-item waiting${sortedClass}`,
+      label: "waiting to collect"
+    };
+  }
+
+  if (activeStep === 2) {
+    if (index < foundIndex) {
+      return {
+        className: `flow-mini-item checked scan-card${sortedClass}`,
+        label: "hover checked"
+      };
+    }
+
+    if (index === foundIndex) {
+      return {
+        className: `flow-mini-item found scan-card${sortedClass}`,
+        label: "FOUND → KD"
+      };
+    }
+
+    return {
+      className: `flow-mini-item waiting${sortedClass}`,
+      label: "waiting"
+    };
+  }
+
+  if (activeStep === 3) {
+    if (index === 0) {
+      return {
+        className: "flow-mini-item used",
+        label: "already device"
+      };
+    }
+
+    if (index < foundIndex) {
+      return {
+        className: `flow-mini-item checked scan-card${sortedClass}`,
+        label: "hover checked"
+      };
+    }
+
+    if (index === foundIndex) {
+      return {
+        className: `flow-mini-item found scan-card${sortedClass}`,
+        label: "FOUND → device"
+      };
+    }
+
+    return {
+      className: `flow-mini-item waiting${sortedClass}`,
+      label: "still inside KD"
+    };
+  }
+
+  return {
+    className: "flow-mini-item used",
+    label: "used by device"
+  };
+}
+
+function getIntegratedKDFlowSteps(scenario, sortedCollectionMode) {
+  if (scenario === "unsorted") {
+    return [
+      {
+        icon: "📦",
+        title: "KD contains items",
+        short: "Random order",
+        badge: "Start",
+        description: "The KD contains multiple item codes and names, but they are not organized.",
+        explain: "Because the KD is random, the operator may check several items before finding the needed one."
+      },
+      {
+        icon: "🏗️",
+        title: "Phase 1: KD Creation",
+        short: "Create the KD",
+        badge: "Phase 1",
+        description: "The hover scan selects each waiting item before it enters the KD.",
+        explain: "KD Creation time is required in both sorted and unsorted scenarios. The visual now shows the selected item being found before it moves into the KD."
+      },
+      {
+        icon: "🔍",
+        title: "Phase 2: KD Check",
+        short: "Search item by item",
+        badge: "Phase 2",
+        description: "The operator checks the KD until the required item is found.",
+        explain: "After a found item is checked, it is returned to the KD box. The search is still slower because the checking order is unsorted."
+      },
+      {
+        icon: "🏭",
+        title: "Phase 3: Production",
+        short: "KD → Device",
+        badge: "Phase 3",
+        description: "Production searches/selects the needed item inside the KD, then the item goes out from the KD to the device.",
+        explain: "This phase is not only checking. The useful item leaves the KD and becomes part of the device, so unsorted searching still costs time before movement."
+      },
+      {
+        icon: "⏱️",
+        title: "Impact",
+        short: "Higher total time",
+        badge: "Result",
+        description: "Unsorted KD consumes more time because the search effort is repeated.",
+        explain: "The more items inside the KD, the more expensive unsorted checking becomes."
+      }
+    ];
+  }
+
+  const sortText = sortedCollectionMode === "after"
+    ? "Sorting cost is added in Phase 1 after collection."
+    : "Items are placed directly in order while collecting, so the sorted factor is paid during KD creation.";
+
+  return [
+    {
+      icon: "📦",
+      title: "KD contains items",
+      short: "Codes and names",
+      badge: "Start",
+      description: "The KD contains multiple items that can be organized by code.",
+      explain: "The goal is to make later item access direct instead of searching repeatedly."
+    },
+    {
+      icon: "🏗️",
+      title: "Phase 1: KD Creation",
+      short: sortedCollectionMode === "after" ? "Create + sort" : "Create organized",
+      badge: "Phase 1",
+      description: sortText,
+      explain: sortedCollectionMode === "after"
+        ? "This mode pays sorting time once, then benefits in the next phases."
+        : "This mode avoids a separate sorting step because organization happens during creation."
+    },
+    {
+      icon: "✅",
+      title: "Phase 2: KD Check",
+      short: "Direct access",
+      badge: "Phase 2",
+      description: "The KD is emptied first, then each item is found quickly and returned to the KD box.",
+      explain: "Because the list is organized, Phase 2 does not waste time checking item by item through an unsorted pile."
+    },
+    {
+      icon: "🏭",
+      title: "Phase 3: Production",
+      short: "KD → Device",
+      badge: "Phase 3",
+      description: "Production quickly finds/selects the needed item inside the sorted KD, then the item goes out from the KD to the device.",
+      explain: "This is where the sorted KD continues saving time because the device receives items after fast access instead of repeated unsorted checking."
+    },
+    {
+      icon: "⏱️",
+      title: "Impact",
+      short: "Lower total time",
+      badge: "Result",
+      description: "The sorted KD reduces repeated searching during KD Check and Production.",
+      explain: "The simulation converts this process improvement into total saved time."
+    }
+  ];
+}
+
+
 function KDSimulationPage() {
-  const [kdCount, setKdCount] = useState(14);
-  const [itemMin, setItemMin] = useState(1);
-  const [itemMax, setItemMax] = useState(30);
-  const [entrySeconds, setEntrySeconds] = useState(120);
-  const [sortedSearchSeconds, setSortedSearchSeconds] = useState(3);
-  const [unsortedCheckSeconds, setUnsortedCheckSeconds] = useState(8);
-  const [sortSecondsPerItemLog, setSortSecondsPerItemLog] = useState(6);
+  const [kdCount, setKdCount] = useState(1);
+  const [itemMin, setItemMin] = useState(17);
+  const [itemMax, setItemMax] = useState(17);
+  const [entrySeconds, setEntrySeconds] = useState(40);
+  const [sortedSearchSeconds, setSortedSearchSeconds] = useState(5);
+  const [unsortedCheckSeconds, setUnsortedCheckSeconds] = useState(15);
+  const [sortSecondsPerItemLog, setSortSecondsPerItemLog] = useState(3);
   const [sortedCollectionMode, setSortedCollectionMode] = useState("after");
   const [selectedKdIndex, setSelectedKdIndex] = useState(0);
-  const [kds, setKds] = useState(() => generateKDs(14, 1, 30));
+  const [flowScenario, setFlowScenario] = useState("unsorted");
+  const [flowStep, setFlowStep] = useState(0);
+  const [kds, setKds] = useState(() => generateKDs(1, 17, 17));
   const [sourceTags, setSourceTags] = useState({
-    kdCount: "Estimated",
-    entrySeconds: "Measured",
-    sortedSearchSeconds: "Estimated",
-    unsortedCheckSeconds: "Estimated",
-    sortSecondsPerItemLog: "Calculated"
+    kdCount: "Given",
+    entrySeconds: "Given",
+    sortedSearchSeconds: "Given",
+    unsortedCheckSeconds: "Given",
+    sortSecondsPerItemLog: "Given"
   });
 
   const FIXED_PHASE_COUNT = 3;
@@ -383,6 +1695,12 @@ function KDSimulationPage() {
       ...previous,
       [key]: value
     }));
+  }
+
+  function updateSortedCollectionMode(mode) {
+    setSortedCollectionMode(mode);
+    setFlowScenario("sorted");
+    setFlowStep(0);
   }
 
   const simulation = useMemo(() => {
@@ -405,13 +1723,13 @@ function KDSimulationPage() {
         <div>
           <h2>KD Manufacturing Simulation</h2>
           <p>
-            Compare unsorted KDs versus sorted KDs across 3 phases. Phase 1 includes manufacturing entry. In “Sort after collecting”, sorting time is also added in Phase 1. Search starts in Phase 2, and found items are removed from the collection during Phase 2 and Phase 3.
+            Compare unsorted KDs versus sorted KDs across 3 phases: KD Creation, KD Check, and Production.
           </p>
         </div>
         <div className="kd-hero-stats">
           <span><b>{kds.length}</b> KDs</span>
           <span><b>{FIXED_PHASE_COUNT}</b> phases</span>
-          <span><b>{entrySeconds}</b>s entry/item</span>
+          <span><b>{entrySeconds}</b>s creation/item</span>
         </div>
       </section>
 
@@ -437,28 +1755,28 @@ function KDSimulationPage() {
           </div>
 
           <div className="setting-line">
-            <label>Manufacturing entry time / item: <b>{entrySeconds}s</b></label>
+            <label>KD creation time / item: <b>{entrySeconds}s</b></label>
             <SettingSourceSelect value={sourceTags.entrySeconds} onChange={(value) => updateSourceTag("entrySeconds", value)} />
           </div>
           <input type="range" min="10" max="300" step="10" value={entrySeconds} onChange={(e) => setEntrySeconds(Number(e.target.value))} />
-          <small className="hint">Phase 1 includes manufacturing entry. If mode is “Sort after collecting”, sorting time is also counted in Phase 1.</small>
+          <small className="hint">Phase 1 is KD Creation. If mode is “Sort after collecting”, sorting is also counted in Phase 1.</small>
 
           <div className="kd-mode-box">
             <h4>Sorted KD mode</h4>
             <div className="mode-choice-grid">
               <button
                 className={sortedCollectionMode === "after" ? "mode-choice active" : "mode-choice"}
-                onClick={() => setSortedCollectionMode("after")}
+                onClick={() => updateSortedCollectionMode("after")}
               >
                 <b>Sort after collecting</b>
-                <span>Collect all items first, then add sorting time in phase 1.</span>
+                <span>Collect all items first, then add sorting time in Phase 1.</span>
               </button>
               <button
                 className={sortedCollectionMode === "while" ? "mode-choice active" : "mode-choice"}
-                onClick={() => setSortedCollectionMode("while")}
+                onClick={() => updateSortedCollectionMode("while")}
               >
                 <b>Sort while collecting</b>
-                <span>Put each item directly in its place, so no extra sorting time.</span>
+                <span>Put each item directly in its place while paying the sorted factor during creation.</span>
               </button>
             </div>
           </div>
@@ -475,7 +1793,7 @@ function KDSimulationPage() {
             <SettingSourceSelect value={sourceTags.unsortedCheckSeconds} onChange={(value) => updateSourceTag("unsortedCheckSeconds", value)} />
           </div>
           <input type="range" min="1" max="30" value={unsortedCheckSeconds} onChange={(e) => setUnsortedCheckSeconds(Number(e.target.value))} />
-          <small className="hint">After an item is found, it is removed from the collection, so the remaining search set becomes smaller.</small>
+          <small className="hint">In Phase 2 the KD is emptied first, then each found item is put back into the KD box.</small>
 
           <div className="setting-line">
             <label>Sorting effort factor: <b>{sortSecondsPerItemLog}s</b></label>
@@ -494,13 +1812,13 @@ function KDSimulationPage() {
             <div className="card kd-summary sorted">
               <small>Total sorted KD time</small>
               <strong>{formatDuration(simulation.totalSortedSeconds)}</strong>
-              <span>{sortedCollectionMode === "after" ? "Entry counted in Phase 1; sorting also counted here if selected" : "Sorts while collecting, no extra sorting time"}</span>
+              <span>{sortedCollectionMode === "after" ? "KD Creation + sorting in Phase 1" : "KD created directly organized"}</span>
             </div>
 
             <div className="card kd-summary unsorted">
               <small>Total unsorted KD time</small>
               <strong>{formatDuration(simulation.totalUnsortedSeconds)}</strong>
-              <span>Search is repeated in all 3 phases with removal after each found item</span>
+              <span>Repeated checking in KD Check and Production</span>
             </div>
 
             <div className={`card kd-summary ${simulation.totalSavedSeconds >= 0 ? "saving" : "loss"}`}>
@@ -509,6 +1827,28 @@ function KDSimulationPage() {
               <span>{simulation.totalSavedSeconds >= 0 ? "Sorted process is faster overall" : "Sorting is not worth it with current settings"}</span>
             </div>
           </div>
+
+          <KDJourneySimulation
+            selectedKd={selectedKd}
+            entrySeconds={entrySeconds}
+            sortedSearchSeconds={sortedSearchSeconds}
+            unsortedCheckSeconds={unsortedCheckSeconds}
+            sortSecondsPerItemLog={sortSecondsPerItemLog}
+          />
+
+          <KDSimulationFlow
+            selectedKd={selectedKd}
+            selectedResult={selectedResult}
+            scenario={flowScenario}
+            setScenario={setFlowScenario}
+            activeStep={flowStep}
+            setActiveStep={setFlowStep}
+            sortedCollectionMode={sortedCollectionMode}
+            entrySeconds={entrySeconds}
+            sortedSearchSeconds={sortedSearchSeconds}
+            unsortedCheckSeconds={unsortedCheckSeconds}
+            sortSecondsPerItemLog={sortSecondsPerItemLog}
+          />
 
           <div className="card kd-break-even">
             <h3>Breaking point</h3>
@@ -531,7 +1871,7 @@ function KDSimulationPage() {
             <div className="kd-section-head">
               <div>
                 <h3>KD list</h3>
-                <p>Select any KD to see its item codes, names, and phase timing.</p>
+                <p>Select any KD to see its item codes, names, flow, and phase timing.</p>
               </div>
               <span className="pill">Sorted search = O(1)</span>
             </div>
@@ -590,7 +1930,7 @@ function KDSimulationPage() {
               </div>
 
               <div className="card kd-phase-card">
-                <h3>3-phase timing for {selectedKd.id}</h3>
+                <h3>3-phase process timing for {selectedKd.id}</h3>
                 <div className="phase-table-wrap">
                   <table className="phase-table">
                     <thead>
@@ -604,7 +1944,7 @@ function KDSimulationPage() {
                     <tbody>
                       {selectedResult.phases.map((phase) => (
                         <tr key={phase.phase}>
-                          <td>Phase {phase.phase}</td>
+                          <td>{getKDPhaseName(phase.phase)}</td>
                           <td>{formatDurationShort(phase.unsortedSeconds)}</td>
                           <td>{formatDurationShort(phase.sortedSeconds)}</td>
                           <td>{phase.note}</td>
@@ -630,6 +1970,7 @@ function KDSimulationPage() {
 function SettingSourceSelect({ value, onChange }) {
   return (
     <select className="source-select" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="Given">Given</option>
       <option value="Estimated">Estimated</option>
       <option value="Calculated">Calculated</option>
       <option value="Measured">Measured</option>
@@ -1295,6 +2636,14 @@ function formatMs(value) {
 }
 
 
+
+function getKDPhaseName(phase) {
+  if (phase === 1) return "Phase 1: KD Creation";
+  if (phase === 2) return "Phase 2: KD Check";
+  if (phase === 3) return "Phase 3: Production";
+  return `Phase ${phase}`;
+}
+
 function generateKDs(kdCount, minItems, maxItems) {
   const itemNames = [
     "Valve", "Sensor", "Bracket", "Cable", "Cover", "Tube", "Screw", "Panel",
@@ -1305,12 +2654,20 @@ function generateKDs(kdCount, minItems, maxItems) {
 
   return Array.from({ length: kdCount }, (_, kdIndex) => {
     const count = randomBetween(minItems, maxItems);
+    const usedCodes = new Set();
     const items = Array.from({ length: count }, (_, itemIndex) => {
-      const randomCodeNumber = randomBetween(100, 999);
+      let randomCodeNumber = randomBetween(100, 999);
+      while (usedCodes.has(randomCodeNumber)) {
+        randomCodeNumber = randomBetween(100, 999);
+      }
+      usedCodes.add(randomCodeNumber);
+
       const name = itemNames[(itemIndex + kdIndex * 3) % itemNames.length];
+      const code = `ITM-${randomCodeNumber}`;
 
       return {
-        code: `ITM-${randomCodeNumber}`,
+        uid: `kd-${kdIndex + 1}-item-${itemIndex + 1}-${randomCodeNumber}`,
+        code,
         name: `${name} ${itemIndex + 1}`
       };
     });
@@ -1344,10 +2701,11 @@ function calculateSingleKD(kd, settings) {
   const phaseCount = settings.phaseCount || 3;
 
   const entryOnce = itemCount * settings.entrySeconds;
-  const unsortedSearchPerPhase = calculateUnsortedSearchSeconds(itemCount, settings.unsortedCheckSeconds);
+  const unsortedPhase2Search = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
+  const unsortedPhase3Search = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
   const sortedSearchPerPhase = calculateSortedSearchSeconds(itemCount, settings.sortedSearchSeconds);
   const sortingSeconds = settings.sortedCollectionMode === "while"
-    ? 0
+    ? itemCount * settings.sortSecondsPerItemLog
     : calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog);
 
   let sortedSeconds = 0;
@@ -1359,21 +2717,26 @@ function calculateSingleKD(kd, settings) {
     let note = "";
 
     if (phase === 1) {
-      // Phase 1 is the collection/manufacturing entry phase.
-      // Unsorted KD only pays entry time.
-      // Sorted KD pays entry time + sorting time only if the selected mode is "Sort after collecting".
+      // Phase 1 is the KD Creation phase.
+      // Unsorted KD only pays KD creation time.
+      // Sorted KD pays KD creation time + sorting time only if the selected mode is "Sort after collecting".
       unsortedPhaseSeconds = entryOnce;
       sortedPhaseSeconds = entryOnce + sortingSeconds;
 
       note = settings.sortedCollectionMode === "after"
-        ? "Manufacturing entry; sorted KD also pays sorting cost after collection"
-        : "Manufacturing entry only; items are placed directly in sorted position";
-    } else {
-      // Phase 2 and Phase 3 are search/extraction phases.
-      // After each found item, it is removed from the collection.
-      unsortedPhaseSeconds = unsortedSearchPerPhase;
+        ? "KD Creation; sorted KD also pays sorting cost after collection"
+        : "KD Creation; each item is placed directly in sorted position while collecting";
+    } else if (phase === 2) {
+      // Phase 2 starts by emptying the KD. Every found item is put back into the KD box.
+      unsortedPhaseSeconds = unsortedPhase2Search;
       sortedPhaseSeconds = sortedSearchPerPhase;
-      note = "Search only; each found item is removed from the collection";
+      note = "Empty KD first, search item by item, then put each found item back into the KD";
+    } else {
+      // Phase 3 searches/selects inside the KD, then the item goes out to the device.
+      // The KD content shrinks as items are sent to the device.
+      unsortedPhaseSeconds = unsortedPhase3Search;
+      sortedPhaseSeconds = sortedSearchPerPhase;
+      note = "Search/select inside KD, then send each item from KD to the device";
     }
 
     unsortedSeconds += unsortedPhaseSeconds;
@@ -1397,16 +2760,28 @@ function calculateSingleKD(kd, settings) {
   };
 }
 
-function calculateUnsortedSearchSeconds(itemCount, checkSeconds) {
-  // Items are searched one by one, and each found item is removed.
-  // Remaining collection size goes from N down to 1.
-  let totalAverageChecks = 0;
+function calculateUnsortedSearchWithRemovalSeconds(itemCount, checkSeconds) {
+  // Phase 2 / Phase 3: unsorted search does not always find the first item.
+  // The same slow-search pattern used in the visual is used here so the timing and journey match.
+  let totalChecks = 0;
+  let iterationIndex = 0;
 
-  for (let remainingItems = itemCount; remainingItems >= 1; remainingItems--) {
-    totalAverageChecks += (remainingItems + 1) / 2;
+  for (let remainingItems = itemCount; remainingItems >= 1; remainingItems -= 1) {
+    totalChecks += getSlowUnsortedTargetIndex(remainingItems, iterationIndex) + 1;
+    iterationIndex += 1;
   }
 
-  return totalAverageChecks * checkSeconds;
+  return totalChecks * checkSeconds;
+}
+
+function calculateUnsortedFullBoxSearchSeconds(itemCount, checkSeconds) {
+  // Kept for comparison only: this assumes the KD box stays full during every search.
+  const averageChecksPerItem = (itemCount + 1) / 2;
+  return itemCount * averageChecksPerItem * checkSeconds;
+}
+
+function calculateUnsortedSearchSeconds(itemCount, checkSeconds) {
+  return calculateUnsortedSearchWithRemovalSeconds(itemCount, checkSeconds);
 }
 
 function calculateSortedSearchSeconds(itemCount, sortedSearchSeconds) {
@@ -1487,22 +2862,19 @@ function insertionSortBenchmark(input) {
   let changes = 0;
 
   for (let i = 1; i < arr.length; i++) {
-    const selectedValue = arr[i];
-    let j = i - 1;
+    let j = i;
 
-    while (j >= 0) {
+    while (j > 0) {
       checks++;
-      if (arr[j] > selectedValue) {
-        arr[j + 1] = arr[j];
+
+      if (arr[j - 1] > arr[j]) {
+        [arr[j - 1], arr[j]] = [arr[j], arr[j - 1]];
         changes++;
         j--;
       } else {
         break;
       }
     }
-
-    arr[j + 1] = selectedValue;
-    changes++;
   }
 
   return { checks, changes };
@@ -1651,28 +3023,50 @@ function insertionSortSteps(input) {
   let changes = 0;
 
   for (let i = 1; i < arr.length; i++) {
-    const selectedValue = arr[i];
-    let j = i - 1;
+    let j = i;
 
-    steps.push({ array: [...arr], active: [i], text: `Taking ${selectedValue} and placing it where it belongs.` });
+    steps.push({
+      array: [...arr],
+      active: [j],
+      text: `Taking ${arr[j]} and moving it left by switching with bigger bars.`
+    });
 
-    while (j >= 0) {
+    while (j > 0) {
       checks++;
-      steps.push({ array: [...arr], active: [j, j + 1], text: `Checking if ${selectedValue} should move before ${arr[j]}.` });
+      steps.push({
+        array: [...arr],
+        active: [j - 1, j],
+        text: `Checking neighboring bars ${arr[j - 1]} and ${arr[j]}.`
+      });
 
-      if (arr[j] > selectedValue) {
-        arr[j + 1] = arr[j];
+      if (arr[j - 1] > arr[j]) {
+        const leftValue = arr[j - 1];
+        const rightValue = arr[j];
+        [arr[j - 1], arr[j]] = [arr[j], arr[j - 1]];
         changes++;
-        steps.push({ array: [...arr], active: [j, j + 1], text: "Moving a bigger value to the right to make space." });
+
+        steps.push({
+          array: [...arr],
+          active: [j - 1, j],
+          text: `${rightValue} is smaller than ${leftValue}, so the two bars switched places.`
+        });
+
         j--;
       } else {
+        steps.push({
+          array: [...arr],
+          active: [j - 1, j],
+          text: `${arr[j]} is already after ${arr[j - 1]}, so no switch is needed.`
+        });
         break;
       }
     }
 
-    arr[j + 1] = selectedValue;
-    changes++;
-    steps.push({ array: [...arr], active: [j + 1], text: `${selectedValue} was placed in the correct position.` });
+    steps.push({
+      array: [...arr],
+      active: [j],
+      text: `${arr[j]} is now in the correct position inside the sorted part.`
+    });
   }
 
   steps.push({ array: [...arr], active: arr.map((_, i) => i), text: "Insertion Sort finished." });
@@ -1685,11 +3079,149 @@ function mergeSortSteps(input) {
   let checks = 0;
   let changes = 0;
 
+  function groupRange(left, right) {
+    return range(left, right);
+  }
+
+  function tempMeta(leftPart, rightPart, i, j, selectedSide = null, selectedTempIndex = null, displacedInfo = {}) {
+    return {
+      leftTemp: [...leftPart],
+      rightTemp: [...rightPart],
+      leftTempIndex: i < leftPart.length ? i : null,
+      rightTempIndex: j < rightPart.length ? j : null,
+      selectedSide,
+      selectedTempIndex,
+      ...displacedInfo
+    };
+  }
+
+  function getDisplacedInfo(left, middle, writeIndex, selectedValue) {
+    const displacedValue = arr[writeIndex];
+
+    if (displacedValue === selectedValue) {
+      return {};
+    }
+
+    return {
+      displacedValue,
+      displacedTempSide: writeIndex <= middle ? "left" : "right",
+      displacedTempIndex: writeIndex <= middle ? writeIndex - left : writeIndex - middle - 1
+    };
+  }
+
+  function pushDivideStep(left, middle, right) {
+    steps.push({
+      array: [...arr],
+      active: groupRange(left, right),
+      mergeView: {
+        type: "divide",
+        range: groupRange(left, right),
+        leftGroup: groupRange(left, middle),
+        rightGroup: groupRange(middle + 1, right)
+      },
+      text: `Divide positions ${left + 1} to ${right + 1}: the purple bars are the left group and the cyan bars are the right group.`
+    });
+  }
+
+  function pushMergeStartStep(left, middle, right, leftPart, rightPart) {
+    steps.push({
+      array: [...arr],
+      active: groupRange(left, right),
+      mergeView: {
+        type: "merge-start",
+        range: groupRange(left, right),
+        leftGroup: groupRange(left, middle),
+        rightGroup: groupRange(middle + 1, right),
+        leftPointer: left,
+        rightPointer: middle + 1,
+        leftPointerValue: leftPart[0],
+        rightPointerValue: rightPart[0],
+        ...tempMeta(leftPart, rightPart, 0, 0)
+      },
+      text: `Start merging. The copied left and copied right groups are shown above the bars, so values do not disappear when a position is overwritten.`
+    });
+  }
+
+  function pushCompareStep(left, middle, right, leftPart, rightPart, i, j, k) {
+    const leftPointer = left + i;
+    const rightPointer = middle + 1 + j;
+    const leftValue = leftPart[i];
+    const rightValue = rightPart[j];
+    const takeLeft = leftValue <= rightValue;
+    const selectedValue = takeLeft ? leftValue : rightValue;
+    const selectedSide = takeLeft ? "left" : "right";
+    const selectedIndex = takeLeft ? leftPointer : rightPointer;
+    const selectedTempIndex = takeLeft ? i : j;
+    const displacedInfo = getDisplacedInfo(left, middle, k, selectedValue);
+
+    steps.push({
+      array: [...arr],
+      active: [leftPointer, rightPointer, k],
+      mergeView: {
+        type: "compare",
+        range: groupRange(left, right),
+        leftGroup: groupRange(left, middle),
+        rightGroup: groupRange(middle + 1, right),
+        leftPointer,
+        rightPointer,
+        leftPointerValue: leftValue,
+        rightPointerValue: rightValue,
+        selectedIndex,
+        selectedValue,
+        selectedSide,
+        selectedTempIndex,
+        writeIndex: k,
+        merged: k > left ? groupRange(left, k - 1) : [],
+        ...tempMeta(leftPart, rightPart, i, j, selectedSide, selectedTempIndex, displacedInfo)
+      },
+      text: `L pointer = ${leftValue}, R pointer = ${rightValue}. ${selectedValue} is smaller, so it is selected from the ${selectedSide} copy and will be put into position ${k + 1}.`
+    });
+  }
+
+  function pushWriteStep(left, middle, right, writeIndex, value, sourceSide, pointerIndex, leftPart, rightPart, iBefore, jBefore, selectedTempIndex, displacedInfo = {}) {
+    const mergedUntilNow = groupRange(left, writeIndex);
+    const leftPointer = iBefore < leftPart.length ? left + iBefore : null;
+    const rightPointer = jBefore < rightPart.length ? middle + 1 + jBefore : null;
+
+    steps.push({
+      array: [...arr],
+      active: [writeIndex, pointerIndex].filter((position) => typeof position === "number"),
+      mergeView: {
+        type: "write",
+        range: groupRange(left, right),
+        leftGroup: groupRange(left, middle),
+        rightGroup: groupRange(middle + 1, right),
+        leftPointer,
+        rightPointer,
+        leftPointerValue: iBefore < leftPart.length ? leftPart[iBefore] : undefined,
+        rightPointerValue: jBefore < rightPart.length ? rightPart[jBefore] : undefined,
+        selectedIndex: pointerIndex,
+        selectedValue: value,
+        selectedSide: sourceSide.startsWith("left") ? "left" : "right",
+        selectedTempIndex,
+        writeIndex,
+        merged: mergedUntilNow,
+        ...tempMeta(
+          leftPart,
+          rightPart,
+          iBefore,
+          jBefore,
+          sourceSide.startsWith("left") ? "left" : "right",
+          selectedTempIndex,
+          displacedInfo
+        )
+      },
+      text: displacedInfo.displacedValue !== undefined
+        ? `${value} is written into position ${writeIndex + 1}. The old value ${displacedInfo.displacedValue} is still visible in the copied ${displacedInfo.displacedTempSide} group above, so it can be placed later.`
+        : `${value} is written into position ${writeIndex + 1}. The selected number rises, then appears in the merged output area.`
+    });
+  }
+
   function mergeSort(left, right) {
     if (left >= right) return;
-    const middle = Math.floor((left + right) / 2);
 
-    steps.push({ array: [...arr], active: range(left, right), text: "Dividing the list into smaller groups." });
+    const middle = Math.floor((left + right) / 2);
+    pushDivideStep(left, middle, right);
 
     mergeSort(left, middle);
     mergeSort(middle + 1, right);
@@ -1700,46 +3232,124 @@ function mergeSortSteps(input) {
     const leftPart = arr.slice(left, middle + 1);
     const rightPart = arr.slice(middle + 1, right + 1);
 
+    pushMergeStartStep(left, middle, right, leftPart, rightPart);
+
     let i = 0;
     let j = 0;
     let k = left;
 
     while (i < leftPart.length && j < rightPart.length) {
       checks++;
-      steps.push({ array: [...arr], active: [k], text: `Choosing the smaller value between ${leftPart[i]} and ${rightPart[j]}.` });
+      const leftPointer = left + i;
+      const rightPointer = middle + 1 + j;
+      const takeLeft = leftPart[i] <= rightPart[j];
+      const selectedValue = takeLeft ? leftPart[i] : rightPart[j];
+      const sourceSide = takeLeft ? "left" : "right";
+      const pointerIndex = takeLeft ? leftPointer : rightPointer;
+      const selectedTempIndex = takeLeft ? i : j;
+      const iBefore = i;
+      const jBefore = j;
 
-      if (leftPart[i] <= rightPart[j]) {
-        arr[k] = leftPart[i];
-        i++;
-      } else {
-        arr[k] = rightPart[j];
-        j++;
-      }
+      pushCompareStep(left, middle, right, leftPart, rightPart, iBefore, jBefore, k);
 
+      const displacedInfo = getDisplacedInfo(left, middle, k, selectedValue);
+      arr[k] = selectedValue;
+      if (takeLeft) i++;
+      else j++;
       changes++;
-      steps.push({ array: [...arr], active: [k], text: "Putting the smaller value back into the main list." });
+      pushWriteStep(left, middle, right, k, selectedValue, sourceSide, pointerIndex, leftPart, rightPart, iBefore, jBefore, selectedTempIndex, displacedInfo);
+
       k++;
     }
 
     while (i < leftPart.length) {
-      arr[k] = leftPart[i];
+      const selectedValue = leftPart[i];
+      const pointerIndex = left + i;
+      const iBefore = i;
+      const jBefore = j;
+      const displacedInfo = getDisplacedInfo(left, middle, k, selectedValue);
+
+      steps.push({
+        array: [...arr],
+        active: [pointerIndex, k],
+        mergeView: {
+          type: "remaining-left",
+          range: groupRange(left, right),
+          leftGroup: groupRange(left, middle),
+          rightGroup: groupRange(middle + 1, right),
+          leftPointer: pointerIndex,
+          leftPointerValue: selectedValue,
+          selectedIndex: pointerIndex,
+          selectedValue,
+          selectedSide: "left",
+          selectedTempIndex: iBefore,
+          writeIndex: k,
+          merged: k > left ? groupRange(left, k - 1) : [],
+          ...tempMeta(leftPart, rightPart, iBefore, jBefore, "left", iBefore, displacedInfo)
+        },
+        text: `Right group is empty, so the remaining left value ${selectedValue} is selected and put into position ${k + 1}.`
+      });
+      arr[k] = selectedValue;
       i++;
       changes++;
-      steps.push({ array: [...arr], active: [k], text: "Adding a remaining value from the left group." });
+      pushWriteStep(left, middle, right, k, selectedValue, "left", pointerIndex, leftPart, rightPart, iBefore, jBefore, iBefore, displacedInfo);
       k++;
     }
 
     while (j < rightPart.length) {
-      arr[k] = rightPart[j];
+      const selectedValue = rightPart[j];
+      const pointerIndex = middle + 1 + j;
+      const iBefore = i;
+      const jBefore = j;
+      const displacedInfo = getDisplacedInfo(left, middle, k, selectedValue);
+
+      steps.push({
+        array: [...arr],
+        active: [pointerIndex, k],
+        mergeView: {
+          type: "remaining-right",
+          range: groupRange(left, right),
+          leftGroup: groupRange(left, middle),
+          rightGroup: groupRange(middle + 1, right),
+          rightPointer: pointerIndex,
+          rightPointerValue: selectedValue,
+          selectedIndex: pointerIndex,
+          selectedValue,
+          selectedSide: "right",
+          selectedTempIndex: jBefore,
+          writeIndex: k,
+          merged: k > left ? groupRange(left, k - 1) : [],
+          ...tempMeta(leftPart, rightPart, iBefore, jBefore, "right", jBefore, displacedInfo)
+        },
+        text: `Left group is empty, so the remaining right value ${selectedValue} is selected and put into position ${k + 1}.`
+      });
+      arr[k] = selectedValue;
       j++;
       changes++;
-      steps.push({ array: [...arr], active: [k], text: "Adding a remaining value from the right group." });
+      pushWriteStep(left, middle, right, k, selectedValue, "right", pointerIndex, leftPart, rightPart, iBefore, jBefore, jBefore, displacedInfo);
       k++;
     }
+
+    steps.push({
+      array: [...arr],
+      active: groupRange(left, right),
+      mergeView: {
+        type: "merged",
+        range: groupRange(left, right),
+        merged: groupRange(left, right)
+      },
+      text: `Positions ${left + 1} to ${right + 1} are now merged and ordered.`
+    });
   }
 
   mergeSort(0, arr.length - 1);
-  steps.push({ array: [...arr], active: arr.map((_, i) => i), text: "Merge Sort finished." });
+  steps.push({
+    array: [...arr],
+    active: arr.map((_, i) => i),
+    mergeView: { type: "complete", merged: arr.map((_, i) => i) },
+    text: "Merge Sort finished. All small sorted groups have been merged into one ordered list."
+  });
+
   return { finalArray: arr, steps, checks, changes };
 }
 
