@@ -567,23 +567,32 @@ export default function App() {
 
 function KDJourneySimulation({
   selectedKd,
-  entrySeconds,
-  sortedSearchSeconds,
-  unsortedCheckSeconds,
-  sortSecondsPerItemLog
+  inventorySecondsPerItem,
+  sortedInventoryTotalSeconds,
+  sortedPhase1TotalSeconds,
+  sortedOperationSeconds,
+  unsortedCheckSeconds
 }) {
-  const [approach, setApproach] = useState("unsorted");
+  const [approach, setApproach] = useState("sortedInventory");
   const [stepIndex, setStepIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
   const journeys = useMemo(() => buildKDJourney(selectedKd, {
-    entrySeconds: Number(entrySeconds),
-    sortedSearchSeconds: Number(sortedSearchSeconds),
-    unsortedCheckSeconds: Number(unsortedCheckSeconds),
-    sortSecondsPerItemLog: Number(sortSecondsPerItemLog)
-  }), [selectedKd, entrySeconds, sortedSearchSeconds, unsortedCheckSeconds, sortSecondsPerItemLog]);
+    inventorySecondsPerItem: Number(inventorySecondsPerItem),
+    sortedInventoryTotalSeconds: Number(sortedInventoryTotalSeconds),
+    sortedPhase1TotalSeconds: Number(sortedPhase1TotalSeconds),
+    sortedOperationSeconds: Number(sortedOperationSeconds),
+    unsortedCheckSeconds: Number(unsortedCheckSeconds)
+  }), [
+    selectedKd,
+    inventorySecondsPerItem,
+    sortedInventoryTotalSeconds,
+    sortedPhase1TotalSeconds,
+    sortedOperationSeconds,
+    unsortedCheckSeconds
+  ]);
 
-  const currentJourney = journeys[approach] || journeys.unsorted;
+  const currentJourney = journeys[approach] || journeys.sortedInventory;
   const currentStep = currentJourney.steps[stepIndex] || currentJourney.steps[0];
   const progress = currentJourney.steps.length <= 1
     ? 100
@@ -637,10 +646,10 @@ function KDJourneySimulation({
       key: "source",
       node: (
         <JourneyBox
-          title="Outside / waiting"
-          subtitle={currentStep.sourceSubtitle || "Before entering the KD"}
+          title="Inventory / waiting"
+          subtitle={currentStep.sourceSubtitle || "Items before KD"}
           items={currentStep.sourceItems}
-          emptyText="Nothing outside"
+          emptyText="Nothing waiting"
           activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
           tone="source"
           scanActive={currentStep.scanSource}
@@ -651,10 +660,10 @@ function KDJourneySimulation({
       key: "search",
       node: (
         <JourneyBox
-          title="Search area"
+          title="Inspection area"
           subtitle={currentStep.searchSubtitle}
           items={currentStep.searchItems}
-          emptyText="No active search"
+          emptyText="No active inspection"
           activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
           tone="search"
           scanActive={currentStep.scanSearch || currentStep.searchingOnly}
@@ -679,10 +688,10 @@ function KDJourneySimulation({
       key: "device",
       node: (
         <JourneyBox
-          title="Device"
-          subtitle={currentStep.deviceSubtitle || "Production output"}
+          title="Assembly output"
+          subtitle={currentStep.deviceSubtitle || "Assembled device content"}
           items={currentStep.deviceItems || []}
-          emptyText="No item in device yet"
+          emptyText="No item assembled yet"
           activeKey={currentStep.activeItem?.uid || currentStep.activeItem?.code}
           tone="device"
         />
@@ -695,7 +704,7 @@ function KDJourneySimulation({
       <div className="kd-section-head">
         <div>
           <h3>KD journey from start to end</h3>
-          <p>One KD, 17 items, and three approaches: unsorted, collect then sort, and collect while sorting.</p>
+          <p>One 17-item KD and three approaches: sorted in Inventory/Prep, sorted in Phase 1, and unsorted from start to end.</p>
         </div>
         <span className="pill">{currentJourney.totalLabel}</span>
       </div>
@@ -758,16 +767,16 @@ function KDJourneySimulation({
 
       <div className="journey-note-grid">
         <div>
-          <b>Phase 1</b>
-          <span>The hover scan selects the next outside item, then it moves into the KD box.</span>
+          <b>Inventory</b>
+          <span>Unsorted inventory uses {inventorySecondsPerItem}s per item. The two sorted approaches use the measured totals you gave.</span>
         </div>
         <div>
-          <b>Phase 2</b>
-          <span>The KD is emptied first, then every search is shown: checked items, found item, then return to KD.</span>
+          <b>Inspection</b>
+          <span>Sorted approaches use {sortedOperationSeconds}s per item. Unsorted uses {unsortedCheckSeconds}s per check with the remaining quantity decreasing by 1 after each found item.</span>
         </div>
         <div>
-          <b>Phase 3</b>
-          <span>Each item is searched inside the KD first, selected, then sent from KD to the device.</span>
+          <b>Assembly</b>
+          <span>Sorted approaches use {sortedOperationSeconds}s per item. Unsorted repeats the same decreasing-check rule.</span>
         </div>
       </div>
     </section>
@@ -787,10 +796,9 @@ function getJourneyVisibleAreas(step) {
   const phase = step?.phase || "";
 
   if (phase.includes("Start")) return ["source", "kd"];
-  if (phase.includes("Sort after collecting")) return ["kd"];
-  if (phase.includes("Phase 1")) return ["source", "kd"];
-  if (phase.includes("Phase 2")) return ["search", "kd"];
-  if (phase.includes("Phase 3")) return ["kd", "device"];
+  if (phase.includes("Inventory")) return ["source", "kd"];
+  if (phase.includes("Inspection")) return ["search", "kd"];
+  if (phase.includes("Assembly")) return ["kd", "device"];
   if (phase.includes("End")) return ["device"];
 
   return ["source", "kd"];
@@ -905,75 +913,117 @@ function getJourneyScanHoldMs(checksNeeded = 1) {
   return Math.min(6200, 1700 + safeChecks * 480);
 }
 
+function getUnsortedDecreasingChecks(itemCount) {
+  return (itemCount * (itemCount + 1)) / 2;
+}
+
+function getScaledMeasuredSeconds(baseSeconds, itemCount, baseItemCount = 17) {
+  if (itemCount === baseItemCount) return baseSeconds;
+  return (baseSeconds * itemCount) / baseItemCount;
+}
+
+function getKDApproachTotals(itemCount, settings) {
+  const inventoryPrepSeconds = itemCount * settings.inventorySecondsPerItem;
+
+  // These measured values are INSPECTION times, not Inventory / Prep times.
+  const sortedInventoryInspectionSeconds = getScaledMeasuredSeconds(
+    settings.sortedInventoryTotalSeconds,
+    itemCount
+  );
+
+  const sortedPhase1InspectionSeconds = getScaledMeasuredSeconds(
+    settings.sortedPhase1TotalSeconds,
+    itemCount
+  );
+
+  const sortedAssemblySeconds = itemCount * settings.sortedOperationSeconds;
+
+  const unsortedInventorySeconds = inventoryPrepSeconds;
+  const unsortedCheckCount = getUnsortedDecreasingChecks(itemCount);
+  const unsortedInspectionSeconds = unsortedCheckCount * settings.unsortedCheckSeconds;
+  const unsortedAssemblySeconds = unsortedCheckCount * settings.unsortedCheckSeconds;
+
+  return {
+    inventoryPrepSeconds,
+
+    // Keep these names because other parts of your app already use them.
+    sortedInventoryPrepSeconds: inventoryPrepSeconds,
+    sortedPhase1InventorySeconds: inventoryPrepSeconds,
+
+    sortedInventoryInspectionSeconds,
+    sortedPhase1InspectionSeconds,
+    sortedAssemblySeconds,
+
+    unsortedInventorySeconds,
+    unsortedInspectionSeconds,
+    unsortedAssemblySeconds,
+    unsortedCheckCount,
+
+    sortedInventoryTotal:
+      inventoryPrepSeconds + sortedInventoryInspectionSeconds + sortedAssemblySeconds,
+
+    sortedPhase1Total:
+      inventoryPrepSeconds + sortedPhase1InspectionSeconds + sortedAssemblySeconds,
+
+    unsortedTotal:
+      unsortedInventorySeconds + unsortedInspectionSeconds + unsortedAssemblySeconds
+  };
+}
+
 function buildKDJourney(kd, settings) {
   const items = kd?.items || [];
   const sortedItems = [...items].sort((a, b) => a.code.localeCompare(b.code));
   const itemCount = items.length;
-  const creationTotal = itemCount * settings.entrySeconds;
-  const unsortedPhase2Total = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
-  const unsortedPhase3Total = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
-  const sortedSearchTotal = calculateSortedSearchSeconds(itemCount, settings.sortedSearchSeconds);
-  const sortAfterSeconds = calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog);
-  const sortWhileSeconds = itemCount * settings.sortSecondsPerItemLog;
+  const totals = getKDApproachTotals(itemCount, settings);
 
-  const totals = {
-    unsorted: creationTotal + unsortedPhase2Total + unsortedPhase3Total,
-    sortedAfter: creationTotal + sortAfterSeconds + sortedSearchTotal + sortedSearchTotal,
-    sortedWhile: creationTotal + sortWhileSeconds + sortedSearchTotal + sortedSearchTotal
+  const approachTotals = {
+    sortedInventory: totals.sortedInventoryTotal,
+    sortedPhase1: totals.sortedPhase1Total,
+    unsorted: totals.unsortedTotal
   };
-
-  const bestTotal = Math.min(totals.unsorted, totals.sortedAfter, totals.sortedWhile);
+  const bestTotal = Math.min(...Object.values(approachTotals));
 
   return {
+    sortedInventory: {
+      key: "sortedInventory",
+      title: "Sorted in Inventory / Prep",
+      short: `Inventory measured total ${formatDurationShort(totals.sortedInventoryPrepSeconds)}; then 3s/item in Inspection and Assembly`,
+      totalSeconds: approachTotals.sortedInventory,
+      totalLabel: approachTotals.sortedInventory === bestTotal ? "Best time" : "Sorted in inventory",
+      steps: buildJourneySteps({
+        approach: "sortedInventory",
+        items,
+        sortedItems,
+        settings,
+        totals
+      })
+    },
+    sortedPhase1: {
+      key: "sortedPhase1",
+      title: "Sorted in Phase 1",
+      short: `Phase 1 measured total ${formatDurationShort(totals.sortedPhase1InventorySeconds)}; then 3s/item in Inspection and Assembly`,
+      totalSeconds: approachTotals.sortedPhase1,
+      totalLabel: approachTotals.sortedPhase1 === bestTotal ? "Best time" : "Sorted in Phase 1",
+      steps: buildJourneySteps({
+        approach: "sortedPhase1",
+        items,
+        sortedItems,
+        settings,
+        totals
+      })
+    },
     unsorted: {
       key: "unsorted",
-      title: "Unsorted",
-      short: "Collect normally, then search item by item",
-      totalSeconds: totals.unsorted,
-      totalLabel: totals.unsorted === bestTotal ? "Best time" : "Slowest search",
+      title: "Unsorted start to end",
+      short: "Inventory = 40s/item; Inspection and Assembly = 3s/check with remaining count decreasing",
+      totalSeconds: approachTotals.unsorted,
+      totalLabel: approachTotals.unsorted === bestTotal ? "Best time" : "Unsorted full path",
       steps: buildJourneySteps({
         approach: "unsorted",
         items,
         sortedItems,
-        creationSeconds: settings.entrySeconds,
-        sortedSearchSeconds: settings.sortedSearchSeconds,
-        unsortedCheckSeconds: settings.unsortedCheckSeconds,
-        sortAfterSeconds: 0,
-        sortWhileSecondsPerItem: 0
-      })
-    },
-    sortedAfter: {
-      key: "sortedAfter",
-      title: "Sorted: collect then sort",
-      short: "Collect first, then sort the KD once",
-      totalSeconds: totals.sortedAfter,
-      totalLabel: totals.sortedAfter === bestTotal ? "Best time" : "Pays sorting once",
-      steps: buildJourneySteps({
-        approach: "sortedAfter",
-        items,
-        sortedItems,
-        creationSeconds: settings.entrySeconds,
-        sortedSearchSeconds: settings.sortedSearchSeconds,
-        unsortedCheckSeconds: settings.unsortedCheckSeconds,
-        sortAfterSeconds,
-        sortWhileSecondsPerItem: 0
-      })
-    },
-    sortedWhile: {
-      key: "sortedWhile",
-      title: "Sorted: collect while sorting",
-      short: "Place each item directly in order while collecting",
-      totalSeconds: totals.sortedWhile,
-      totalLabel: totals.sortedWhile === bestTotal ? "Best time" : "Sorted during creation",
-      steps: buildJourneySteps({
-        approach: "sortedWhile",
-        items,
-        sortedItems,
-        creationSeconds: settings.entrySeconds,
-        sortedSearchSeconds: settings.sortedSearchSeconds,
-        unsortedCheckSeconds: settings.unsortedCheckSeconds,
-        sortAfterSeconds: 0,
-        sortWhileSecondsPerItem: settings.sortSecondsPerItemLog
+        settings,
+        totals
       })
     }
   };
@@ -983,20 +1033,32 @@ function buildJourneySteps({
   approach,
   items,
   sortedItems,
-  creationSeconds,
-  sortedSearchSeconds,
-  unsortedCheckSeconds,
-  sortAfterSeconds,
-  sortWhileSecondsPerItem
+  settings,
+  totals
 }) {
   let cumulativeSeconds = 0;
   const steps = [];
-  const isSortedApproach = approach !== "unsorted";
+  const itemCount = items.length;
+  const isUnsortedApproach = approach === "unsorted";
+  const isSortedInventoryApproach = approach === "sortedInventory";
+  const isSortedPhase1Approach = approach === "sortedPhase1";
+  const sortedApproach = !isUnsortedApproach;
+
   const titleByApproach = {
-    unsorted: "Unsorted journey",
-    sortedAfter: "Sorted journey: collect then sort",
-    sortedWhile: "Sorted journey: collect while sorting"
+    sortedInventory: "Sorted in Inventory / Prep journey",
+    sortedPhase1: "Sorted in Phase 1 journey",
+    unsorted: "Unsorted from start to end journey"
   };
+
+  const inventoryTotalForApproach = isSortedInventoryApproach
+    ? totals.sortedInventoryPrepSeconds
+    : isSortedPhase1Approach
+      ? totals.sortedPhase1InventorySeconds
+      : totals.unsortedInventorySeconds;
+
+  const inventorySecondsPerShownItem = itemCount > 0
+    ? inventoryTotalForApproach / itemCount
+    : 0;
 
   const pushStep = (step) => {
     steps.push({
@@ -1012,8 +1074,8 @@ function buildJourneySteps({
       resultLabel: "Result",
       deviceIcon: "→",
       deviceLabel: "Device",
-      deviceSubtitle: "Production output",
-      searchSubtitle: "No search yet",
+      deviceSubtitle: "Assembly output",
+      searchSubtitle: "No inspection yet",
       scanSource: false,
       scanSearch: false,
       scanKd: false,
@@ -1025,7 +1087,7 @@ function buildJourneySteps({
   pushStep({
     phase: "Start",
     title: titleByApproach[approach],
-    description: "The KD starts outside the process. Press Play or Next to follow the full journey.",
+    description: "The KD starts before the process. Press Play or Next to follow Inventory, Inspection, and Assembly.",
     sourceItems: items,
     moveLabel: "Ready",
     resultLabel: "KD empty"
@@ -1035,197 +1097,182 @@ function buildJourneySteps({
   let collectedItems = [];
 
   for (let collectionStep = 0; collectionStep < items.length; collectionStep += 1) {
-    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(outsidePool.length, collectionStep);
+    const targetIndex = sortedApproach ? 0 : getSlowUnsortedTargetIndex(outsidePool.length, collectionStep);
     const item = outsidePool[targetIndex];
-    const phase1ScanPool = [...outsidePool];
     const scanChecks = targetIndex + 1;
     const collectedBeforeInsert = [...collectedItems];
-    const kdItemsBeforeInsert = approach === "sortedWhile"
+    const kdItemsBeforeInsert = sortedApproach
       ? [...collectedBeforeInsert].sort((a, b) => a.code.localeCompare(b.code))
       : collectedBeforeInsert;
 
     pushStep({
-      phase: "Phase 1: KD Creation",
-      title: `Search outside for ${item.code}`,
-      description: `The hover scan checks ${scanChecks} outside chip${scanChecks === 1 ? "" : "s"}. ${item.code} is only highlighted as FOUND here; it is not inserted into the KD box yet.`,
-      sourceItems: getSearchPreviewItems(item, phase1ScanPool, false),
+      phase: "Inventory / Prep",
+      title: `Pick ${item.code} from inventory`,
+      description: sortedApproach
+        ? `${item.code} is picked and prepared for an organized KD. This approach uses the measured Inventory/Phase 1 total spread over the ${itemCount} items.`
+        : `${item.code} is picked without sorting. Inventory timing = ${settings.inventorySecondsPerItem}s per item.`,
+      sourceItems: getSearchPreviewItems(item, outsidePool, false),
       kdItems: kdItemsBeforeInsert,
       activeItem: item,
       timeAdded: 0,
       cumulativeSeconds,
       icon: "🔍",
-      moveLabel: "Scanning outside",
+      moveLabel: "Pick item",
       resultLabel: "Searching...",
-      searchLabel: "Scanning...",
+      searchLabel: "Inventory pick",
       searchingOnly: true,
-      sourceSubtitle: `Outside scan: ${scanChecks} check${scanChecks === 1 ? "" : "s"}`,
-      searchSubtitle: "Phase 1 collection scan",
+      sourceSubtitle: `Inventory pick path: ${scanChecks} check${scanChecks === 1 ? "" : "s"}`,
       kdSubtitle: collectedBeforeInsert.length ? "KD content before insertion" : "KD is still empty",
       scanSource: true,
       holdMs: getJourneyScanHoldMs(scanChecks)
     });
 
-    const timeAdded = creationSeconds + (approach === "sortedWhile" ? sortWhileSecondsPerItem : 0);
-    cumulativeSeconds += timeAdded;
+    cumulativeSeconds += inventorySecondsPerShownItem;
 
     collectedItems = [...collectedItems, item];
     outsidePool = removeItemAtIndex(outsidePool, targetIndex);
 
-    const kdItems = approach === "sortedWhile"
+    const kdItems = sortedApproach
       ? [...collectedItems].sort((a, b) => a.code.localeCompare(b.code))
       : collectedItems;
 
     pushStep({
-      phase: "Phase 1: KD Creation",
-      title: approach === "sortedWhile" ? `Insert ${item.code} in sorted position` : `Insert ${item.code} into the KD box`,
-      description: approach === "sortedWhile"
-        ? `${item.code} was found first, and now it enters the KD box in its sorted position. Time = ${creationSeconds}s creation + ${sortWhileSecondsPerItem}s sorted placement.`
-        : `${item.code} was found first, and only now it moves from outside into the KD box.`,
+      phase: "Inventory / Prep",
+      title: sortedApproach ? `Place ${item.code} into sorted KD position` : `Place ${item.code} into KD without sorting`,
+      description: sortedApproach
+        ? `${item.code} enters the KD in an organized position. Cumulative Inventory timing is based on the measured total for this sorted approach.`
+        : `${item.code} enters the KD as found. Inventory time added = ${settings.inventorySecondsPerItem}s.`,
       sourceItems: outsidePool,
       kdItems,
       activeItem: item,
-      timeAdded,
+      timeAdded: inventorySecondsPerShownItem,
       cumulativeSeconds,
       icon: "📥",
-      moveLabel: "Found → KD",
-      resultLabel: approach === "sortedWhile" ? "Inserted sorted" : "Inserted into KD",
-      sourceSubtitle: "Outside items remaining",
+      moveLabel: "Inventory → KD",
+      resultLabel: sortedApproach ? "Inserted sorted" : "Inserted unsorted",
+      sourceSubtitle: "Inventory items remaining",
       kdSubtitle: "KD content after insertion",
-      searchSubtitle: "Insertion after search"
+      searchSubtitle: "Inventory insertion"
     });
   }
 
-  if (approach === "sortedAfter") {
-    cumulativeSeconds += sortAfterSeconds;
-    pushStep({
-      phase: "Phase 1: Sort after collecting",
-      title: "Sort the collected KD once",
-      description: `All items are already collected. Now the KD is sorted once before checking starts. Sorting time = ${formatDurationShort(sortAfterSeconds)}.`,
-      kdItems: sortedItems,
-      timeAdded: sortAfterSeconds,
-      cumulativeSeconds,
-      icon: "↕️",
-      moveLabel: "Sort",
-      resultLabel: "KD ordered",
-      searchSubtitle: "No search yet"
-    });
-  }
-
-  let phase2Pool = isSortedApproach ? [...sortedItems] : [...collectedItems];
-  let phase2ReturnedItems = [];
+  let inspectionPool = sortedApproach ? [...sortedItems] : [...collectedItems];
+  let inspectedItems = [];
 
   pushStep({
-    phase: "Phase 2: KD Check",
-    title: "Empty the KD before checking",
-    description: "The KD box is emptied first. Items are searched one by one, and every found item is returned to the KD box.",
-    searchItems: phase2Pool,
+    phase: "Inspection",
+    title: "Start inspection",
+    description: sortedApproach
+      ? `The KD is organized, so inspection takes ${settings.sortedOperationSeconds}s per item.`
+      : `The KD is still unsorted. Inspection uses ${settings.unsortedCheckSeconds}s per check, and the remaining total decreases by 1 after each found item.`,
+    searchItems: inspectionPool,
     kdItems: [],
     timeAdded: 0,
     cumulativeSeconds,
     icon: "📤",
-    moveLabel: "Empty KD",
-    resultLabel: "Ready to check",
-    searchSubtitle: "Items waiting for checking"
+    moveLabel: "Open KD",
+    resultLabel: "Ready to inspect",
+    searchSubtitle: "Items waiting for inspection"
   });
 
-  const phase2Iterations = phase2Pool.length;
-  for (let searchStep = 0; searchStep < phase2Iterations; searchStep += 1) {
-    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(phase2Pool.length, searchStep);
-    const item = phase2Pool[targetIndex];
-    const remainingBeforeSearch = phase2Pool.length;
+  const inspectionIterations = inspectionPool.length;
+  for (let inspectionStep = 0; inspectionStep < inspectionIterations; inspectionStep += 1) {
+    const targetIndex = sortedApproach ? 0 : inspectionPool.length - 1;
+    const item = inspectionPool[targetIndex];
+    const remainingBeforeSearch = inspectionPool.length;
     const checksNeeded = targetIndex + 1;
-    const timeAdded = isSortedApproach
-      ? sortedSearchSeconds
-      : checksNeeded * unsortedCheckSeconds;
+    const timeAdded = sortedApproach
+      ? settings.sortedOperationSeconds
+      : checksNeeded * settings.unsortedCheckSeconds;
     cumulativeSeconds += timeAdded;
 
     pushStep({
-      phase: "Phase 2: KD Check",
-      title: `Search for ${item.code}`,
-      description: isSortedApproach
-        ? `${item.code} is reached quickly because the temporary search list is sorted.`
-        : `The operator does not get ${item.code} immediately. The hover scan checks ${checksNeeded} item${checksNeeded === 1 ? "" : "s"} from the unsorted list before the green FOUND chip appears.`,
-      searchItems: getSearchPreviewItems(item, phase2Pool, isSortedApproach),
-      kdItems: phase2ReturnedItems,
+      phase: "Inspection",
+      title: `Inspect ${item.code}`,
+      description: sortedApproach
+        ? `${item.code} is reached directly because the KD is sorted. Inspection time = ${settings.sortedOperationSeconds}s per item.`
+        : `${item.code} is found after ${checksNeeded} check${checksNeeded === 1 ? "" : "s"}. Time added = ${checksNeeded} × ${settings.unsortedCheckSeconds}s = ${formatDurationShort(timeAdded)}. After this, remaining items decrease from ${remainingBeforeSearch} to ${remainingBeforeSearch - 1}.`,
+      searchItems: getSearchPreviewItems(item, inspectionPool, sortedApproach),
+      kdItems: inspectedItems,
       activeItem: item,
       timeAdded,
       cumulativeSeconds,
       icon: "🔍",
-      moveLabel: isSortedApproach ? "Fast search" : "Search item by item",
-      resultLabel: "Searching...",
-      searchLabel: isSortedApproach ? "Fast search" : "Checking...",
+      moveLabel: sortedApproach ? "Fast inspect" : "Check one by one",
+      resultLabel: "Inspecting...",
+      searchLabel: sortedApproach ? "Fast inspection" : "Inspection scan",
       searchingOnly: true,
-      searchSubtitle: isSortedApproach ? "Sorted search path" : `Unsorted scan: ${checksNeeded}/${remainingBeforeSearch} checks`,
-      kdSubtitle: "Found items already returned",
+      searchSubtitle: sortedApproach ? "Sorted inspection path" : `Unsorted checks: ${checksNeeded}/${remainingBeforeSearch}`,
+      kdSubtitle: "Inspected items already returned",
       holdMs: getJourneyScanHoldMs(checksNeeded)
     });
 
-    phase2Pool = removeItemAtIndex(phase2Pool, targetIndex);
-    phase2ReturnedItems = [...phase2ReturnedItems, item];
+    inspectionPool = removeItemAtIndex(inspectionPool, targetIndex);
+    inspectedItems = [...inspectedItems, item];
 
     pushStep({
-      phase: "Phase 2: KD Check",
-      title: `Return ${item.code} to the KD box`,
-      description: `${item.code} is now found, so it is put back into the KD box. The next item will be searched from the remaining search area.`,
-      searchItems: phase2Pool,
-      kdItems: phase2ReturnedItems,
+      phase: "Inspection",
+      title: `Return ${item.code} after inspection`,
+      description: `${item.code} is checked, then returned to the KD box.`,
+      searchItems: inspectionPool,
+      kdItems: sortedApproach ? [...inspectedItems].sort((a, b) => a.code.localeCompare(b.code)) : inspectedItems,
       activeItem: item,
       timeAdded: 0,
       cumulativeSeconds,
       icon: "📥",
-      moveLabel: "Found",
-      resultLabel: "Found → KD",
-      searchSubtitle: "Items still waiting for checking",
-      kdSubtitle: "Returned found items"
+      moveLabel: "Checked",
+      resultLabel: "Returned to KD",
+      searchSubtitle: "Items still waiting for inspection",
+      kdSubtitle: "Checked items returned"
     });
   }
 
-  let phase3Pool = isSortedApproach ? [...sortedItems] : [...phase2ReturnedItems];
+  let assemblyPool = sortedApproach ? [...sortedItems] : [...inspectedItems];
   let deviceItems = [];
-  const phase3Iterations = phase3Pool.length;
+  const assemblyIterations = assemblyPool.length;
 
-  for (let productionStep = 0; productionStep < phase3Iterations; productionStep += 1) {
-    const targetIndex = isSortedApproach ? 0 : getSlowUnsortedTargetIndex(phase3Pool.length, productionStep);
-    const item = phase3Pool[targetIndex];
-    const remainingBeforeDevice = phase3Pool.length;
+  for (let assemblyStep = 0; assemblyStep < assemblyIterations; assemblyStep += 1) {
+    const targetIndex = sortedApproach ? 0 : assemblyPool.length - 1;
+    const item = assemblyPool[targetIndex];
+    const remainingBeforeDevice = assemblyPool.length;
     const checksNeeded = targetIndex + 1;
-    const timeAdded = isSortedApproach
-      ? sortedSearchSeconds
-      : checksNeeded * unsortedCheckSeconds;
+    const timeAdded = sortedApproach
+      ? settings.sortedOperationSeconds
+      : checksNeeded * settings.unsortedCheckSeconds;
     cumulativeSeconds += timeAdded;
 
     pushStep({
-      phase: "Phase 3: Production",
-      title: `Search inside KD for ${item.code}`,
-      description: isSortedApproach
-        ? `${item.code} is selected quickly inside the sorted KD before moving to the device.`
-        : `The KD is still unordered, so the hover scan checks ${checksNeeded} item${checksNeeded === 1 ? "" : "s"} inside the KD before ${item.code} is found.`,
-      kdItems: getSearchPreviewItems(item, phase3Pool, isSortedApproach),
+      phase: "Assembly",
+      title: `Select ${item.code} for assembly`,
+      description: sortedApproach
+        ? `${item.code} is selected directly. Assembly time = ${settings.sortedOperationSeconds}s per item.`
+        : `${item.code} is found after ${checksNeeded} check${checksNeeded === 1 ? "" : "s"}. Time added = ${checksNeeded} × ${settings.unsortedCheckSeconds}s = ${formatDurationShort(timeAdded)}. After this, remaining items decrease from ${remainingBeforeDevice} to ${remainingBeforeDevice - 1}.`,
+      kdItems: getSearchPreviewItems(item, assemblyPool, sortedApproach),
       deviceItems,
       activeItem: item,
       timeAdded,
       cumulativeSeconds,
       icon: "🔎",
-      moveLabel: "Search in KD",
-      resultLabel: "Found in KD",
-      searchLabel: isSortedApproach ? "Fast KD search" : "Searching KD...",
+      moveLabel: sortedApproach ? "Direct select" : "Search in KD",
+      resultLabel: "Found for assembly",
+      searchLabel: sortedApproach ? "Fast assembly pick" : "Assembly scan",
       searchingOnly: true,
       deviceIcon: "🔎",
-      deviceLabel: "Searching...",
-      deviceSubtitle: "Items already sent to device",
-      kdSubtitle: isSortedApproach ? "Sorted KD search path" : `Unsorted KD scan: ${checksNeeded}/${remainingBeforeDevice} checks`,
+      deviceLabel: "Selecting...",
+      deviceSubtitle: "Items already assembled",
+      kdSubtitle: sortedApproach ? "Sorted KD pick path" : `Unsorted assembly checks: ${checksNeeded}/${remainingBeforeDevice}`,
       searchSubtitle: `Remaining KD items: ${remainingBeforeDevice}`,
       holdMs: getJourneyScanHoldMs(checksNeeded)
     });
 
-    phase3Pool = removeItemAtIndex(phase3Pool, targetIndex);
+    assemblyPool = removeItemAtIndex(assemblyPool, targetIndex);
     deviceItems = [...deviceItems, item];
 
     pushStep({
-      phase: "Phase 3: Production",
-      title: `Send ${item.code} from KD to the device`,
-      description: `${item.code} leaves the KD box and becomes part of the device. The KD now contains only the remaining items.`,
-      kdItems: phase3Pool,
+      phase: "Assembly",
+      title: `Assemble ${item.code}`,
+      description: `${item.code} leaves the KD box and becomes part of the assembly output.`,
+      kdItems: assemblyPool,
       deviceItems,
       activeItem: item,
       timeAdded: 0,
@@ -1234,17 +1281,17 @@ function buildJourneySteps({
       moveLabel: "Selected",
       resultLabel: "Remaining KD",
       deviceIcon: "➡️",
-      deviceLabel: "KD → Device",
-      deviceSubtitle: "Items already sent to device",
+      deviceLabel: "KD → Assembly",
+      deviceSubtitle: "Items already assembled",
       kdSubtitle: "Remaining KD content",
-      searchSubtitle: `Remaining KD items: ${phase3Pool.length}`
+      searchSubtitle: `Remaining KD items: ${assemblyPool.length}`
     });
   }
 
   pushStep({
     phase: "End",
     title: "Journey finished",
-    description: `The full journey is complete. The selected items have moved from KD to device. Total time for this approach is ${formatDuration(cumulativeSeconds)}.`,
+    description: `The full journey is complete. Total time for this approach is ${formatDuration(cumulativeSeconds)}.` ,
     kdItems: [],
     deviceItems,
     timeAdded: 0,
@@ -1254,7 +1301,7 @@ function buildJourneySteps({
     resultLabel: "KD empty",
     deviceIcon: "✅",
     deviceLabel: "Completed",
-    deviceSubtitle: "Device received the items",
+    deviceSubtitle: "Assembly received all items",
     searchSubtitle: "Finished"
   });
 
@@ -1268,13 +1315,15 @@ function KDSimulationFlow({
   setScenario,
   activeStep,
   setActiveStep,
-  sortedCollectionMode,
-  entrySeconds,
-  sortedSearchSeconds,
-  unsortedCheckSeconds,
-  sortSecondsPerItemLog
+  inventorySecondsPerItem,
+  sortedOperationSeconds,
+  unsortedCheckSeconds
 }) {
-  const steps = getIntegratedKDFlowSteps(scenario, sortedCollectionMode);
+  const steps = getIntegratedKDFlowSteps(scenario, {
+    inventorySecondsPerItem,
+    sortedOperationSeconds,
+    unsortedCheckSeconds
+  });
   const currentStep = steps[activeStep] || steps[0];
   const phaseDurations = selectedResult?.phases || [];
   const previewItems = selectedKd?.items?.slice(0, 6) || [];
@@ -1284,21 +1333,27 @@ function KDSimulationFlow({
       <div className="kd-section-head">
         <div>
           <h3>Visual process flow</h3>
-          <p>Connect the process flow with the phase timing for the selected KD.</p>
+          <p>Connect Inventory, Inspection, and Assembly with the timing table for the selected KD.</p>
         </div>
 
         <div className="integrated-flow-toggle">
           <button
+            className={scenario === "sortedInventory" ? "active" : ""}
+            onClick={() => { setScenario("sortedInventory"); setActiveStep(0); }}
+          >
+            Sorted in Inventory
+          </button>
+          <button
+            className={scenario === "sortedPhase1" ? "active" : ""}
+            onClick={() => { setScenario("sortedPhase1"); setActiveStep(0); }}
+          >
+            Sorted in Phase 1
+          </button>
+          <button
             className={scenario === "unsorted" ? "active" : ""}
             onClick={() => { setScenario("unsorted"); setActiveStep(0); }}
           >
-            Unsorted KD
-          </button>
-          <button
-            className={scenario === "sorted" ? "active" : ""}
-            onClick={() => { setScenario("sorted"); setActiveStep(0); }}
-          >
-            Sorted KD
+            Unsorted
           </button>
         </div>
       </div>
@@ -1363,8 +1418,8 @@ function KDSimulationFlow({
               </div>
               <div className="flow-mini-device-status">
                 {activeStep >= 3
-                  ? "Phase 3: selected items leave the KD and go to the device."
-                  : "Before Phase 3, checked items are still inside the KD or returned back to it."}
+                  ? "Assembly: selected items leave the KD and go to the assembly output."
+                  : "Before Assembly, checked items are still inside the KD or returned back to it."}
               </div>
             </div>
 
@@ -1373,14 +1428,13 @@ function KDSimulationFlow({
               {phaseDurations.map((phase) => (
                 <div key={phase.phase} className="phase-time-line">
                   <b>{getKDPhaseName(phase.phase)}</b>
+                  <span>Sorted in Inventory: {formatDurationShort(phase.sortedInventorySeconds)}</span>
+                  <span>Sorted in Phase 1: {formatDurationShort(phase.sortedPhase1Seconds)}</span>
                   <span>Unsorted: {formatDurationShort(phase.unsortedSeconds)}</span>
-                  <span>Sorted: {formatDurationShort(phase.sortedSeconds)}</span>
                 </div>
               ))}
             </div>
           </div>
-
-
 
           <div className="integrated-flow-message">
             <b>Explanation:</b> {currentStep.explain}
@@ -1395,89 +1449,87 @@ function buildKDItemFlowRows(kd, settings) {
   if (!kd || !kd.items || kd.items.length === 0) return [];
 
   const itemCount = kd.items.length;
-  const sortingTotal = settings.scenario === "sorted"
-    ? settings.sortedCollectionMode === "after"
-      ? calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog)
-      : itemCount * settings.sortSecondsPerItemLog
-    : 0;
-  const sortingPerItem = itemCount > 0 ? sortingTotal / itemCount : 0;
-
   let cumulativeSeconds = 0;
 
   return kd.items.map((item, index) => {
     const remainingBeforeSearch = itemCount - index;
-    const creationSeconds = settings.entrySeconds;
-    const sortingSeconds = settings.scenario === "sorted" ? sortingPerItem : 0;
+    const inventorySeconds = settings.scenario === "unsorted"
+      ? settings.inventorySecondsPerItem
+      : settings.scenario === "sortedPhase1"
+        ? settings.sortedPhase1TotalSeconds / itemCount
+        : settings.sortedInventoryTotalSeconds / itemCount;
 
-    const checkSeconds = settings.scenario === "unsorted"
-      ? ((remainingBeforeSearch + 1) / 2) * settings.unsortedCheckSeconds
-      : settings.sortedSearchSeconds;
+    const inspectionSeconds = settings.scenario === "unsorted"
+      ? remainingBeforeSearch * settings.unsortedCheckSeconds
+      : settings.sortedOperationSeconds;
 
-    const productionSeconds = settings.scenario === "unsorted"
-      ? ((itemCount + 1) / 2) * settings.unsortedCheckSeconds
-      : settings.sortedSearchSeconds;
+    const assemblySeconds = settings.scenario === "unsorted"
+      ? remainingBeforeSearch * settings.unsortedCheckSeconds
+      : settings.sortedOperationSeconds;
 
-    const phase1Seconds = creationSeconds + sortingSeconds;
-    const totalSeconds = phase1Seconds + checkSeconds + productionSeconds;
-
+    const totalSeconds = inventorySeconds + inspectionSeconds + assemblySeconds;
     cumulativeSeconds += totalSeconds;
 
     return {
       sequence: index + 1,
       item,
       remainingBeforeSearch,
-      creationSeconds,
-      sortingSeconds,
-      phase1Seconds,
-      checkSeconds,
-      productionSeconds,
+      inventorySeconds,
+      inspectionSeconds,
+      assemblySeconds,
       totalSeconds,
       cumulativeSeconds
     };
   });
 }
 
+function getScenarioLabel(scenario) {
+  if (scenario === "sortedInventory") return "Sorted in Inventory";
+  if (scenario === "sortedPhase1") return "Sorted in Phase 1";
+  return "Unsorted";
+}
+
 function getIntegratedStageNodes(activeStep, scenario) {
-  const sortedTone = scenario === "sorted" ? "good" : "warn";
+  const isSorted = scenario !== "unsorted";
+  const sortedTone = isSorted ? "good" : "warn";
 
   if (activeStep === 0) {
     return [
-      { icon: "📦", title: "KD box", subtitle: scenario === "sorted" ? "Ready to organize" : "Random order", tone: sortedTone }
+      { icon: "📦", title: "KD box", subtitle: isSorted ? "Will be organized" : "Random order", tone: sortedTone }
     ];
   }
 
   if (activeStep === 1) {
     return [
-      { icon: "📥", title: "Outside", subtitle: "Waiting items", tone: "warn" },
-      { icon: "🏗️", title: "Phase 1", subtitle: "KD Creation" },
-      { icon: "📦", title: "KD box", subtitle: scenario === "sorted" ? "Collected sorted" : "Collected" , tone: sortedTone }
+      { icon: "📥", title: "Inventory", subtitle: scenario === "unsorted" ? "40s/item" : "Measured total", tone: "warn" },
+      { icon: "🏗️", title: "Phase 1", subtitle: getScenarioLabel(scenario) },
+      { icon: "📦", title: "KD box", subtitle: isSorted ? "Collected sorted" : "Collected unsorted", tone: sortedTone }
     ];
   }
 
   if (activeStep === 2) {
     return [
-      { icon: "🔍", title: "Search area", subtitle: scenario === "sorted" ? "Fast lookup" : "Item-by-item" , tone: "warn" },
-      { icon: scenario === "sorted" ? "✅" : "🔎", title: "Phase 2", subtitle: "KD Check" },
-      { icon: "📦", title: "KD box", subtitle: "Found items returned", tone: "good" }
+      { icon: isSorted ? "✅" : "🔎", title: "Inspection", subtitle: isSorted ? "3s/item" : "3s/check", tone: "warn" },
+      { icon: "📦", title: "KD box", subtitle: "Checked items returned", tone: sortedTone }
     ];
   }
 
   if (activeStep === 3) {
     return [
-      { icon: "📦", title: "KD box", subtitle: "Select item", tone: sortedTone },
-      { icon: "🏭", title: "Phase 3", subtitle: "Production" },
-      { icon: "🧩", title: "Device", subtitle: "Receives item", tone: "good" }
+      { icon: "📦", title: "KD box", subtitle: isSorted ? "Direct pick" : "Search needed", tone: sortedTone },
+      { icon: "🏭", title: "Assembly", subtitle: isSorted ? "3s/item" : "3s/check" },
+      { icon: "🧩", title: "Assembly output", subtitle: "Receives item", tone: "good" }
     ];
   }
 
   return [
-    { icon: "⏱️", title: scenario === "sorted" ? "Time Saved" : "Time Used", subtitle: scenario === "sorted" ? "Less search" : "Repeated search", tone: sortedTone }
+    { icon: "⏱️", title: "Result", subtitle: getScenarioLabel(scenario), tone: sortedTone }
   ];
 }
 
 function getFlowMiniItemState(index, activeStep, scenario) {
-  const sortedClass = scenario === "sorted" ? " sorted" : "";
-  const foundIndex = scenario === "sorted" ? 1 : 3;
+  const sortedClass = scenario !== "unsorted" ? " sorted" : "";
+  const foundIndex = scenario !== "unsorted" ? 1 : 3;
 
   if (activeStep === 0) {
     return {
@@ -1490,20 +1542,20 @@ function getFlowMiniItemState(index, activeStep, scenario) {
     if (index < foundIndex) {
       return {
         className: `flow-mini-item checked scan-card${sortedClass}`,
-        label: "hover checked"
+        label: "inventory checked"
       };
     }
 
     if (index === foundIndex) {
       return {
         className: `flow-mini-item found scan-card${sortedClass}`,
-        label: "FOUND → KD"
+        label: "picked → KD"
       };
     }
 
     return {
       className: `flow-mini-item waiting${sortedClass}`,
-      label: "waiting to collect"
+      label: "waiting to pick"
     };
   }
 
@@ -1511,14 +1563,14 @@ function getFlowMiniItemState(index, activeStep, scenario) {
     if (index < foundIndex) {
       return {
         className: `flow-mini-item checked scan-card${sortedClass}`,
-        label: "hover checked"
+        label: scenario === "unsorted" ? "check" : "quick check"
       };
     }
 
     if (index === foundIndex) {
       return {
         className: `flow-mini-item found scan-card${sortedClass}`,
-        label: "FOUND → KD"
+        label: "inspected"
       };
     }
 
@@ -1532,21 +1584,21 @@ function getFlowMiniItemState(index, activeStep, scenario) {
     if (index === 0) {
       return {
         className: "flow-mini-item used",
-        label: "already device"
+        label: "already assembled"
       };
     }
 
     if (index < foundIndex) {
       return {
         className: `flow-mini-item checked scan-card${sortedClass}`,
-        label: "hover checked"
+        label: scenario === "unsorted" ? "assembly check" : "direct pick"
       };
     }
 
     if (index === foundIndex) {
       return {
         className: `flow-mini-item found scan-card${sortedClass}`,
-        label: "FOUND → device"
+        label: "assembly found"
       };
     }
 
@@ -1558,126 +1610,127 @@ function getFlowMiniItemState(index, activeStep, scenario) {
 
   return {
     className: "flow-mini-item used",
-    label: "used by device"
+    label: "completed"
   };
 }
 
-function getIntegratedKDFlowSteps(scenario, sortedCollectionMode) {
-  if (scenario === "unsorted") {
+function getIntegratedKDFlowSteps(scenario, settings) {
+  const isSorted = scenario !== "unsorted";
+  const approachLabel = getScenarioLabel(scenario);
+
+  if (!isSorted) {
     return [
       {
         icon: "📦",
         title: "KD contains items",
         short: "Random order",
         badge: "Start",
-        description: "The KD contains multiple item codes and names, but they are not organized.",
-        explain: "Because the KD is random, the operator may check several items before finding the needed one."
+        description: "The KD contains the 17 items, but they are not organized.",
+        explain: `Unsorted means the operator may need multiple checks. Inspection and Assembly use ${settings.unsortedCheckSeconds}s per check.`
       },
       {
-        icon: "🏗️",
-        title: "Phase 1: KD Creation",
-        short: "Create the KD",
-        badge: "Phase 1",
-        description: "The hover scan selects each waiting item before it enters the KD.",
-        explain: "KD Creation time is required in both sorted and unsorted scenarios. The visual now shows the selected item being found before it moves into the KD."
+        icon: "📥",
+        title: "Inventory",
+        short: `${settings.inventorySecondsPerItem}s per item`,
+        badge: "Inventory",
+        description: "Each item is picked from inventory without sorting.",
+        explain: `Inventory unsorted = number of items × ${settings.inventorySecondsPerItem}s.`
       },
       {
         icon: "🔍",
-        title: "Phase 2: KD Check",
-        short: "Search item by item",
-        badge: "Phase 2",
-        description: "The operator checks the KD until the required item is found.",
-        explain: "After a found item is checked, it is returned to the KD box. The search is still slower because the checking order is unsorted."
+        title: "Inspection",
+        short: `${settings.unsortedCheckSeconds}s per check`,
+        badge: "Inspection",
+        description: "Inspection scans the unsorted KD. After each found item, the remaining total decreases by one.",
+        explain: `For 17 items, checks = 17 + 16 + ... + 1 = 153 checks. Inspection time = 153 × ${settings.unsortedCheckSeconds}s.`
       },
       {
         icon: "🏭",
-        title: "Phase 3: Production",
-        short: "KD → Device",
-        badge: "Phase 3",
-        description: "Production searches/selects the needed item inside the KD, then the item goes out from the KD to the device.",
-        explain: "This phase is not only checking. The useful item leaves the KD and becomes part of the device, so unsorted searching still costs time before movement."
+        title: "Assembly",
+        short: `${settings.unsortedCheckSeconds}s per check`,
+        badge: "Assembly",
+        description: "Assembly repeats the same unsorted search rule before each item is used.",
+        explain: `Assembly unsorted also uses 17 + 16 + ... + 1 checks, each check taking ${settings.unsortedCheckSeconds}s.`
       },
       {
         icon: "⏱️",
         title: "Impact",
-        short: "Higher total time",
+        short: "Highest repeated search",
         badge: "Result",
-        description: "Unsorted KD consumes more time because the search effort is repeated.",
-        explain: "The more items inside the KD, the more expensive unsorted checking becomes."
+        description: "The repeated checks in Inspection and Assembly make the unsorted path much slower.",
+        explain: "The timing table converts this repeated-check behavior into total time."
       }
     ];
   }
-
-  const sortText = sortedCollectionMode === "after"
-    ? "Sorting cost is added in Phase 1 after collection."
-    : "Items are placed directly in order while collecting, so the sorted factor is paid during KD creation.";
 
   return [
     {
       icon: "📦",
       title: "KD contains items",
-      short: "Codes and names",
+      short: approachLabel,
       badge: "Start",
-      description: "The KD contains multiple items that can be organized by code.",
-      explain: "The goal is to make later item access direct instead of searching repeatedly."
+      description: `The KD will be handled using the ${approachLabel} approach.`,
+      explain: "Once the KD is organized, Inspection and Assembly can use a direct 3s/item timing."
     },
     {
-      icon: "🏗️",
-      title: "Phase 1: KD Creation",
-      short: sortedCollectionMode === "after" ? "Create + sort" : "Create organized",
-      badge: "Phase 1",
-      description: sortText,
-      explain: sortedCollectionMode === "after"
-        ? "This mode pays sorting time once, then benefits in the next phases."
-        : "This mode avoids a separate sorting step because organization happens during creation."
+      icon: "📥",
+      title: "Inventory / Phase 1",
+      short: scenario === "sortedInventory" ? "3m 12s total" : "4m 43s total",
+      badge: "Inventory",
+      description: scenario === "sortedInventory"
+        ? "The KD is sorted during Inventory/Prep using the measured 3:12 total."
+        : "The KD is sorted in Phase 1 using the measured 4:43 total.",
+      explain: scenario === "sortedInventory"
+        ? "Sorted in Inventory/Prep uses the measured 3:12 total for the 17-item KD."
+        : "Sorted in Phase 1 uses the measured 4:43 total for the 17-item KD."
     },
     {
       icon: "✅",
-      title: "Phase 2: KD Check",
-      short: "Direct access",
-      badge: "Phase 2",
-      description: "The KD is emptied first, then each item is found quickly and returned to the KD box.",
-      explain: "Because the list is organized, Phase 2 does not waste time checking item by item through an unsorted pile."
+      title: "Inspection",
+      short: `${settings.sortedOperationSeconds}s per item`,
+      badge: "Inspection",
+      description: "Because the KD is sorted, each item is checked directly.",
+      explain: `Inspection sorted = number of items × ${settings.sortedOperationSeconds}s.`
     },
     {
       icon: "🏭",
-      title: "Phase 3: Production",
-      short: "KD → Device",
-      badge: "Phase 3",
-      description: "Production quickly finds/selects the needed item inside the sorted KD, then the item goes out from the KD to the device.",
-      explain: "This is where the sorted KD continues saving time because the device receives items after fast access instead of repeated unsorted checking."
+      title: "Assembly",
+      short: `${settings.sortedOperationSeconds}s per item`,
+      badge: "Assembly",
+      description: "Assembly also uses direct selection from the sorted KD.",
+      explain: `Assembly sorted = number of items × ${settings.sortedOperationSeconds}s.`
     },
     {
       icon: "⏱️",
       title: "Impact",
-      short: "Lower total time",
+      short: "Low repeated search",
       badge: "Result",
-      description: "The sorted KD reduces repeated searching during KD Check and Production.",
-      explain: "The simulation converts this process improvement into total saved time."
+      description: "The sorted approaches avoid the repeated decreasing-check search in both Inspection and Assembly.",
+      explain: "The table compares this direct 3s/item timing against the unsorted 3s/check timing."
     }
   ];
 }
-
 
 function KDSimulationPage() {
   const [kdCount, setKdCount] = useState(1);
   const [itemMin, setItemMin] = useState(17);
   const [itemMax, setItemMax] = useState(17);
-  const [entrySeconds, setEntrySeconds] = useState(40);
-  const [sortedSearchSeconds, setSortedSearchSeconds] = useState(5);
-  const [unsortedCheckSeconds, setUnsortedCheckSeconds] = useState(15);
-  const [sortSecondsPerItemLog, setSortSecondsPerItemLog] = useState(3);
-  const [sortedCollectionMode, setSortedCollectionMode] = useState("after");
+  const [inventorySecondsPerItem, setInventorySecondsPerItem] = useState(40);
+  const [sortedInventoryTotalSeconds, setSortedInventoryTotalSeconds] = useState(192);
+  const [sortedPhase1TotalSeconds, setSortedPhase1TotalSeconds] = useState(283);
+  const [sortedOperationSeconds, setSortedOperationSeconds] = useState(3);
+  const [unsortedCheckSeconds, setUnsortedCheckSeconds] = useState(3);
   const [selectedKdIndex, setSelectedKdIndex] = useState(0);
-  const [flowScenario, setFlowScenario] = useState("unsorted");
+  const [flowScenario, setFlowScenario] = useState("sortedInventory");
   const [flowStep, setFlowStep] = useState(0);
   const [kds, setKds] = useState(() => generateKDs(1, 17, 17));
   const [sourceTags, setSourceTags] = useState({
     kdCount: "Given",
-    entrySeconds: "Given",
-    sortedSearchSeconds: "Given",
-    unsortedCheckSeconds: "Given",
-    sortSecondsPerItemLog: "Given"
+    inventorySecondsPerItem: "Estimated",
+    sortedInventoryTotalSeconds: "Measured",
+    sortedPhase1TotalSeconds: "Measured",
+    sortedOperationSeconds: "Measured",
+    unsortedCheckSeconds: "Measured"
   });
 
   const FIXED_PHASE_COUNT = 3;
@@ -1688,6 +1741,7 @@ function KDSimulationPage() {
     const safeCount = Math.max(1, Number(kdCount));
     setKds(generateKDs(safeCount, safeMin, safeMax));
     setSelectedKdIndex(0);
+    setFlowStep(0);
   }
 
   function updateSourceTag(key, value) {
@@ -1697,25 +1751,28 @@ function KDSimulationPage() {
     }));
   }
 
-  function updateSortedCollectionMode(mode) {
-    setSortedCollectionMode(mode);
-    setFlowScenario("sorted");
-    setFlowStep(0);
-  }
-
   const simulation = useMemo(() => {
     return calculateKDSimulation(kds, {
-      entrySeconds: Number(entrySeconds),
-      phaseCount: FIXED_PHASE_COUNT,
-      sortedSearchSeconds: Number(sortedSearchSeconds),
+      inventorySecondsPerItem: Number(inventorySecondsPerItem),
+      sortedInventoryTotalSeconds: Number(sortedInventoryTotalSeconds),
+      sortedPhase1TotalSeconds: Number(sortedPhase1TotalSeconds),
+      sortedOperationSeconds: Number(sortedOperationSeconds),
       unsortedCheckSeconds: Number(unsortedCheckSeconds),
-      sortSecondsPerItemLog: Number(sortSecondsPerItemLog),
-      sortedCollectionMode
+      phaseCount: FIXED_PHASE_COUNT
     });
-  }, [kds, entrySeconds, sortedSearchSeconds, unsortedCheckSeconds, sortSecondsPerItemLog, sortedCollectionMode]);
+  }, [
+    kds,
+    inventorySecondsPerItem,
+    sortedInventoryTotalSeconds,
+    sortedPhase1TotalSeconds,
+    sortedOperationSeconds,
+    unsortedCheckSeconds
+  ]);
 
   const selectedKd = kds[selectedKdIndex] || kds[0];
   const selectedResult = simulation.results[selectedKdIndex] || simulation.results[0];
+  const selectedItemCount = selectedKd?.items?.length || 17;
+  const unsortedChecks = getUnsortedDecreasingChecks(selectedItemCount);
 
   return (
     <main className="kd-page">
@@ -1723,13 +1780,13 @@ function KDSimulationPage() {
         <div>
           <h2>KD Manufacturing Simulation</h2>
           <p>
-            Compare unsorted KDs versus sorted KDs across 3 phases: KD Creation, KD Check, and Production.
+            Compare a 17-item KD across Inventory, Inspection, and Assembly using the three approaches you described.
           </p>
         </div>
         <div className="kd-hero-stats">
           <span><b>{kds.length}</b> KDs</span>
+          <span><b>{selectedItemCount}</b> items/KD</span>
           <span><b>{FIXED_PHASE_COUNT}</b> phases</span>
-          <span><b>{entrySeconds}</b>s creation/item</span>
         </div>
       </section>
 
@@ -1746,63 +1803,51 @@ function KDSimulationPage() {
           <div className="kd-two-inputs">
             <div>
               <label>Min items</label>
-              <input type="number" min="1" max="30" value={itemMin} onChange={(e) => setItemMin(Number(e.target.value))} />
+              <input type="number" min="1" max="60" value={itemMin} onChange={(e) => setItemMin(Number(e.target.value))} />
             </div>
             <div>
               <label>Max items</label>
               <input type="number" min="1" max="60" value={itemMax} onChange={(e) => setItemMax(Number(e.target.value))} />
             </div>
           </div>
+          <small className="hint">Default setup is fixed to 17 items. Measured sorted totals are scaled if you intentionally test another item count.</small>
 
           <div className="setting-line">
-            <label>KD creation time / item: <b>{entrySeconds}s</b></label>
-            <SettingSourceSelect value={sourceTags.entrySeconds} onChange={(value) => updateSourceTag("entrySeconds", value)} />
+            <label>Unsorted inventory time / item: <b>{inventorySecondsPerItem}s</b></label>
+            <SettingSourceSelect value={sourceTags.inventorySecondsPerItem} onChange={(value) => updateSourceTag("inventorySecondsPerItem", value)} />
           </div>
-          <input type="range" min="10" max="300" step="10" value={entrySeconds} onChange={(e) => setEntrySeconds(Number(e.target.value))} />
-          <small className="hint">Phase 1 is KD Creation. If mode is “Sort after collecting”, sorting is also counted in Phase 1.</small>
-
-          <div className="kd-mode-box">
-            <h4>Sorted KD mode</h4>
-            <div className="mode-choice-grid">
-              <button
-                className={sortedCollectionMode === "after" ? "mode-choice active" : "mode-choice"}
-                onClick={() => updateSortedCollectionMode("after")}
-              >
-                <b>Sort after collecting</b>
-                <span>Collect all items first, then add sorting time in Phase 1.</span>
-              </button>
-              <button
-                className={sortedCollectionMode === "while" ? "mode-choice active" : "mode-choice"}
-                onClick={() => updateSortedCollectionMode("while")}
-              >
-                <b>Sort while collecting</b>
-                <span>Put each item directly in its place while paying the sorted factor during creation.</span>
-              </button>
-            </div>
-          </div>
+          <input type="range" min="1" max="120" step="1" value={inventorySecondsPerItem} onChange={(e) => setInventorySecondsPerItem(Number(e.target.value))} />
+          <small className="hint">
+            Estimated value: Inventory unsorted = items × {inventorySecondsPerItem}s.
+          </small>
 
           <div className="setting-line">
-            <label>Sorted search time / item: <b>{sortedSearchSeconds}s</b></label>
-            <SettingSourceSelect value={sourceTags.sortedSearchSeconds} onChange={(value) => updateSourceTag("sortedSearchSeconds", value)} />
+            <label>Sorted in Inventory / Prep total: <b>{formatDurationShort(sortedInventoryTotalSeconds)}</b></label>
+            <SettingSourceSelect value={sourceTags.sortedInventoryTotalSeconds} onChange={(value) => updateSourceTag("sortedInventoryTotalSeconds", value)} />
           </div>
-          <input type="range" min="1" max="20" value={sortedSearchSeconds} onChange={(e) => setSortedSearchSeconds(Number(e.target.value))} />
-          <small className="hint">Sorted KD search is O(1), so it uses a small fixed time per item.</small>
+          <input type="range" min="30" max="600" step="1" value={sortedInventoryTotalSeconds} onChange={(e) => setSortedInventoryTotalSeconds(Number(e.target.value))} />
+          <small className="hint">Default measured value: 3:12 = 192s for 17 items.</small>
 
           <div className="setting-line">
-            <label>Unsorted check time / comparison: <b>{unsortedCheckSeconds}s</b></label>
+            <label>Sorted in Phase 1 total: <b>{formatDurationShort(sortedPhase1TotalSeconds)}</b></label>
+            <SettingSourceSelect value={sourceTags.sortedPhase1TotalSeconds} onChange={(value) => updateSourceTag("sortedPhase1TotalSeconds", value)} />
+          </div>
+          <input type="range" min="30" max="700" step="1" value={sortedPhase1TotalSeconds} onChange={(e) => setSortedPhase1TotalSeconds(Number(e.target.value))} />
+          <small className="hint">Default measured value: 4:43 = 283s for 17 items.</small>
+
+          <div className="setting-line">
+            <label>Sorted Inspection / Assembly time: <b>{sortedOperationSeconds}s/item</b></label>
+            <SettingSourceSelect value={sourceTags.sortedOperationSeconds} onChange={(value) => updateSourceTag("sortedOperationSeconds", value)} />
+          </div>
+          <input type="range" min="1" max="20" step="0.5" value={sortedOperationSeconds} onChange={(e) => setSortedOperationSeconds(Number(e.target.value))} />
+          <small className="hint">Used by the first two approaches in both Inspection and Assembly.</small>
+
+          <div className="setting-line">
+            <label>Unsorted check time: <b>{unsortedCheckSeconds}s/check</b></label>
             <SettingSourceSelect value={sourceTags.unsortedCheckSeconds} onChange={(value) => updateSourceTag("unsortedCheckSeconds", value)} />
           </div>
-          <input type="range" min="1" max="30" value={unsortedCheckSeconds} onChange={(e) => setUnsortedCheckSeconds(Number(e.target.value))} />
-          <small className="hint">In Phase 2 the KD is emptied first, then each found item is put back into the KD box.</small>
-
-          <div className="setting-line">
-            <label>Sorting effort factor: <b>{sortSecondsPerItemLog}s</b></label>
-            <SettingSourceSelect value={sourceTags.sortSecondsPerItemLog} onChange={(value) => updateSourceTag("sortSecondsPerItemLog", value)} />
-          </div>
-          <input type="range" min="1" max="30" value={sortSecondsPerItemLog} onChange={(e) => setSortSecondsPerItemLog(Number(e.target.value))} />
-          <small className="hint">
-            Used only in “Sort after collecting”. Sorting is counted once in Phase 1.
-          </small>
+          <input type="range" min="1" max="20" step="0.5" value={unsortedCheckSeconds} onChange={(e) => setUnsortedCheckSeconds(Number(e.target.value))} />
+          <small className="hint">Unsorted Inspection and Assembly use 3s per check; remaining count decreases by 1 after each found item.</small>
 
           <button className="primary kd-full-button" onClick={regenerate}>Generate New KD Data</button>
         </aside>
@@ -1810,30 +1855,35 @@ function KDSimulationPage() {
         <section className="kd-main">
           <div className="kd-summary-grid">
             <div className="card kd-summary sorted">
-              <small>Total sorted KD time</small>
-              <strong>{formatDuration(simulation.totalSortedSeconds)}</strong>
-              <span>{sortedCollectionMode === "after" ? "KD Creation + sorting in Phase 1" : "KD created directly organized"}</span>
+              <small>Sorted in Inventory / Prep</small>
+              <strong>{formatDuration(simulation.totalSortedInventorySeconds)}</strong>
+             <span>
+              Inventory {inventorySecondsPerItem}s/item estimated + Inspection {formatDurationShort(sortedInventoryTotalSeconds)} measured + Assembly {sortedOperationSeconds}s/item measured
+            </span>
+            </div>
+
+            <div className="card kd-summary saving">
+              <small>Sorted in Phase 1</small>
+              <strong>{formatDuration(simulation.totalSortedPhase1Seconds)}</strong>
+              <span>
+                Inventory {inventorySecondsPerItem}s/item estimated + Inspection {formatDurationShort(sortedPhase1TotalSeconds)} measured + Assembly {sortedOperationSeconds}s/item measured
+              </span>
             </div>
 
             <div className="card kd-summary unsorted">
-              <small>Total unsorted KD time</small>
+              <small>Unsorted start to end</small>
               <strong>{formatDuration(simulation.totalUnsortedSeconds)}</strong>
-              <span>Repeated checking in KD Check and Production</span>
-            </div>
-
-            <div className={`card kd-summary ${simulation.totalSavedSeconds >= 0 ? "saving" : "loss"}`}>
-              <small>{simulation.totalSavedSeconds >= 0 ? "Time saved by sorting" : "Extra time due to sorting"}</small>
-              <strong>{formatDuration(Math.abs(simulation.totalSavedSeconds))}</strong>
-              <span>{simulation.totalSavedSeconds >= 0 ? "Sorted process is faster overall" : "Sorting is not worth it with current settings"}</span>
+              <span>Inventory {inventorySecondsPerItem}s/item estimated + Inspection/Assembly {unsortedCheckSeconds}s/check with decreasing remaining count</span>
             </div>
           </div>
 
           <KDJourneySimulation
             selectedKd={selectedKd}
-            entrySeconds={entrySeconds}
-            sortedSearchSeconds={sortedSearchSeconds}
+            inventorySecondsPerItem={inventorySecondsPerItem}
+            sortedInventoryTotalSeconds={sortedInventoryTotalSeconds}
+            sortedPhase1TotalSeconds={sortedPhase1TotalSeconds}
+            sortedOperationSeconds={sortedOperationSeconds}
             unsortedCheckSeconds={unsortedCheckSeconds}
-            sortSecondsPerItemLog={sortSecondsPerItemLog}
           />
 
           <KDSimulationFlow
@@ -1843,29 +1893,21 @@ function KDSimulationPage() {
             setScenario={setFlowScenario}
             activeStep={flowStep}
             setActiveStep={setFlowStep}
-            sortedCollectionMode={sortedCollectionMode}
-            entrySeconds={entrySeconds}
-            sortedSearchSeconds={sortedSearchSeconds}
+            inventorySecondsPerItem={inventorySecondsPerItem}
+            sortedOperationSeconds={sortedOperationSeconds}
             unsortedCheckSeconds={unsortedCheckSeconds}
-            sortSecondsPerItemLog={sortSecondsPerItemLog}
           />
 
-          <div className="card kd-break-even">
-            <h3>Breaking point</h3>
-            {simulation.breakEvenItems ? (
-              <p>
-                With the current settings, sorting becomes faster starting from around
-                <b> {simulation.breakEvenItems} items per KD</b>.
-              </p>
-            ) : (
-              <p>
-                With the current settings, sorting does not become faster within the tested range.
-              </p>
-            )}
-            <div className="break-even-bar">
-              <span style={{ width: `${Math.min(100, ((simulation.breakEvenItems || 30) / 30) * 100)}%` }} />
-            </div>
-          </div>
+          <p>
+            For the unsorted path, Inspection checks <b>{selectedItemCount} + {selectedItemCount - 1} + ... + 1 = {unsortedChecks} checks</b>,
+            so each unsorted check phase takes <b>{formatDurationShort(unsortedChecks * unsortedCheckSeconds)}</b>.
+          </p>
+
+          <p className="kd-check-note">
+            <b>How checks work:</b> one check means looking at one item while searching.
+            In the unsorted approach, the first search may check all {selectedItemCount} items.
+            After the found item is removed, only {selectedItemCount - 1} remain, then {selectedItemCount - 2}, and so on until 1.
+          </p>
 
           <section className="card kd-list-card">
             <div className="kd-section-head">
@@ -1873,7 +1915,7 @@ function KDSimulationPage() {
                 <h3>KD list</h3>
                 <p>Select any KD to see its item codes, names, flow, and phase timing.</p>
               </div>
-              <span className="pill">Sorted search = O(1)</span>
+              <span className="pill">Default KD = 17 items</span>
             </div>
 
             <div className="kd-list">
@@ -1885,7 +1927,7 @@ function KDSimulationPage() {
                 >
                   <b>{result.kd.id}</b>
                   <span>{result.kd.items.length} items</span>
-                  <em>{result.savedSeconds >= 0 ? `saves ${formatDurationShort(result.savedSeconds)}` : `loses ${formatDurationShort(Math.abs(result.savedSeconds))}`}</em>
+                  <em>best saves {formatDurationShort(result.bestSavedVsUnsortedSeconds)}</em>
                 </button>
               ))}
             </div>
@@ -1930,14 +1972,15 @@ function KDSimulationPage() {
               </div>
 
               <div className="card kd-phase-card">
-                <h3>3-phase process timing for {selectedKd.id}</h3>
+                <h3>3-phase timing for {selectedKd.id}</h3>
                 <div className="phase-table-wrap">
                   <table className="phase-table">
                     <thead>
                       <tr>
                         <th>Phase</th>
+                        <th>Sorted in Inventory / Prep</th>
+                        <th>Sorted in Phase 1</th>
                         <th>Unsorted</th>
-                        <th>Sorted</th>
                         <th>Note</th>
                       </tr>
                     </thead>
@@ -1945,8 +1988,9 @@ function KDSimulationPage() {
                       {selectedResult.phases.map((phase) => (
                         <tr key={phase.phase}>
                           <td>{getKDPhaseName(phase.phase)}</td>
+                          <td>{formatDurationShort(phase.sortedInventorySeconds)}</td>
+                          <td>{formatDurationShort(phase.sortedPhase1Seconds)}</td>
                           <td>{formatDurationShort(phase.unsortedSeconds)}</td>
-                          <td>{formatDurationShort(phase.sortedSeconds)}</td>
                           <td>{phase.note}</td>
                         </tr>
                       ))}
@@ -1955,8 +1999,9 @@ function KDSimulationPage() {
                 </div>
 
                 <div className="kd-total-line">
+                  <span>Sorted in Inventory / Prep total: <b>{formatDuration(selectedResult.sortedInventorySeconds)}</b></span>
+                  <span>Sorted in Phase 1 total: <b>{formatDuration(selectedResult.sortedPhase1Seconds)}</b></span>
                   <span>Unsorted total: <b>{formatDuration(selectedResult.unsortedSeconds)}</b></span>
-                  <span>Sorted total: <b>{formatDuration(selectedResult.sortedSeconds)}</b></span>
                 </div>
               </div>
             </section>
@@ -2638,9 +2683,9 @@ function formatMs(value) {
 
 
 function getKDPhaseName(phase) {
-  if (phase === 1) return "Phase 1: KD Creation";
-  if (phase === 2) return "Phase 2: KD Check";
-  if (phase === 3) return "Phase 3: Production";
+  if (phase === 1) return "Inventory / Prep";
+  if (phase === 2) return "Inspection";
+  if (phase === 3) return "Assembly";
   return `Phase ${phase}`;
 }
 
@@ -2681,17 +2726,17 @@ function generateKDs(kdCount, minItems, maxItems) {
 
 function calculateKDSimulation(kds, settings) {
   const results = kds.map((kd) => calculateSingleKD(kd, settings));
-  const totalSortedSeconds = results.reduce((sum, result) => sum + result.sortedSeconds, 0);
+  const totalSortedInventorySeconds = results.reduce((sum, result) => sum + result.sortedInventorySeconds, 0);
+  const totalSortedPhase1Seconds = results.reduce((sum, result) => sum + result.sortedPhase1Seconds, 0);
   const totalUnsortedSeconds = results.reduce((sum, result) => sum + result.unsortedSeconds, 0);
-  const totalSavedSeconds = totalUnsortedSeconds - totalSortedSeconds;
-  const breakEvenItems = findKDBreakEven(settings);
+  const totalBestSavedVsUnsortedSeconds = totalUnsortedSeconds - Math.min(totalSortedInventorySeconds, totalSortedPhase1Seconds, totalUnsortedSeconds);
 
   return {
     results,
-    totalSortedSeconds,
+    totalSortedInventorySeconds,
+    totalSortedPhase1Seconds,
     totalUnsortedSeconds,
-    totalSavedSeconds,
-    breakEvenItems
+    totalBestSavedVsUnsortedSeconds
   };
 }
 
@@ -2699,79 +2744,64 @@ function calculateSingleKD(kd, settings) {
   const itemCount = kd.items.length;
   const phases = [];
   const phaseCount = settings.phaseCount || 3;
+  const totals = getKDApproachTotals(itemCount, settings);
 
-  const entryOnce = itemCount * settings.entrySeconds;
-  const unsortedPhase2Search = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
-  const unsortedPhase3Search = calculateUnsortedSearchWithRemovalSeconds(itemCount, settings.unsortedCheckSeconds);
-  const sortedSearchPerPhase = calculateSortedSearchSeconds(itemCount, settings.sortedSearchSeconds);
-  const sortingSeconds = settings.sortedCollectionMode === "while"
-    ? itemCount * settings.sortSecondsPerItemLog
-    : calculateSortingSeconds(itemCount, settings.sortSecondsPerItemLog);
-
-  let sortedSeconds = 0;
+  let sortedInventorySeconds = 0;
+  let sortedPhase1Seconds = 0;
   let unsortedSeconds = 0;
 
   for (let phase = 1; phase <= phaseCount; phase++) {
+    let sortedInventoryPhaseSeconds = 0;
+    let sortedPhase1PhaseSeconds = 0;
     let unsortedPhaseSeconds = 0;
-    let sortedPhaseSeconds = 0;
     let note = "";
 
-    if (phase === 1) {
-      // Phase 1 is the KD Creation phase.
-      // Unsorted KD only pays KD creation time.
-      // Sorted KD pays KD creation time + sorting time only if the selected mode is "Sort after collecting".
-      unsortedPhaseSeconds = entryOnce;
-      sortedPhaseSeconds = entryOnce + sortingSeconds;
-
-      note = settings.sortedCollectionMode === "after"
-        ? "KD Creation; sorted KD also pays sorting cost after collection"
-        : "KD Creation; each item is placed directly in sorted position while collecting";
-    } else if (phase === 2) {
-      // Phase 2 starts by emptying the KD. Every found item is put back into the KD box.
-      unsortedPhaseSeconds = unsortedPhase2Search;
-      sortedPhaseSeconds = sortedSearchPerPhase;
-      note = "Empty KD first, search item by item, then put each found item back into the KD";
-    } else {
-      // Phase 3 searches/selects inside the KD, then the item goes out to the device.
-      // The KD content shrinks as items are sent to the device.
-      unsortedPhaseSeconds = unsortedPhase3Search;
-      sortedPhaseSeconds = sortedSearchPerPhase;
-      note = "Search/select inside KD, then send each item from KD to the device";
+  if (phase === 1) {
+    sortedInventoryPhaseSeconds = totals.inventoryPrepSeconds;
+    sortedPhase1PhaseSeconds = totals.inventoryPrepSeconds;
+    unsortedPhaseSeconds = totals.unsortedInventorySeconds;
+    note = `Inventory / Prep: all approaches = ${itemCount} × ${settings.inventorySecondsPerItem}s.`;
+  } else if (phase === 2) {
+    sortedInventoryPhaseSeconds = totals.sortedInventoryInspectionSeconds;
+    sortedPhase1PhaseSeconds = totals.sortedPhase1InspectionSeconds;
+    unsortedPhaseSeconds = totals.unsortedInspectionSeconds;
+    note = `Inspection: sorted in Inventory/Prep = ${formatDurationShort(totals.sortedInventoryInspectionSeconds)} measured; sorted in Phase 1 = ${formatDurationShort(totals.sortedPhase1InspectionSeconds)} measured; unsorted = ${totals.unsortedCheckCount} checks × ${settings.unsortedCheckSeconds}s.`;
+  } else  {
+      sortedInventoryPhaseSeconds = totals.sortedAssemblySeconds;
+      sortedPhase1PhaseSeconds = totals.sortedAssemblySeconds;
+      unsortedPhaseSeconds = totals.unsortedAssemblySeconds;
+      note = `Assembly: sorted approaches = ${itemCount} × ${settings.sortedOperationSeconds}s; unsorted = ${totals.unsortedCheckCount} checks × ${settings.unsortedCheckSeconds}s.`;
     }
 
+    sortedInventorySeconds += sortedInventoryPhaseSeconds;
+    sortedPhase1Seconds += sortedPhase1PhaseSeconds;
     unsortedSeconds += unsortedPhaseSeconds;
-    sortedSeconds += sortedPhaseSeconds;
 
     phases.push({
       phase,
+      sortedInventorySeconds: sortedInventoryPhaseSeconds,
+      sortedPhase1Seconds: sortedPhase1PhaseSeconds,
       unsortedSeconds: unsortedPhaseSeconds,
-      sortedSeconds: sortedPhaseSeconds,
       note
     });
   }
 
+  const bestSeconds = Math.min(sortedInventorySeconds, sortedPhase1Seconds, unsortedSeconds);
+
   return {
     kd,
     itemCount,
-    sortedSeconds,
+    sortedInventorySeconds,
+    sortedPhase1Seconds,
     unsortedSeconds,
-    savedSeconds: unsortedSeconds - sortedSeconds,
+    bestSeconds,
+    bestSavedVsUnsortedSeconds: unsortedSeconds - bestSeconds,
     phases
   };
 }
 
 function calculateUnsortedSearchWithRemovalSeconds(itemCount, checkSeconds) {
-  // Phase 2 / Phase 3: unsorted search does not always find the first item.
-  // The same slow-search pattern used in the visual is used here so the timing and journey match.
-  let totalChecks = 0;
-  let iterationIndex = 0;
-
-  for (let remainingItems = itemCount; remainingItems >= 1; remainingItems -= 1) {
-    totalChecks += getSlowUnsortedTargetIndex(remainingItems, iterationIndex) + 1;
-    iterationIndex += 1;
-  }
-
-  return totalChecks * checkSeconds;
+  return getUnsortedDecreasingChecks(itemCount) * checkSeconds;
 }
 
 function calculateUnsortedFullBoxSearchSeconds(itemCount, checkSeconds) {
@@ -2785,8 +2815,6 @@ function calculateUnsortedSearchSeconds(itemCount, checkSeconds) {
 }
 
 function calculateSortedSearchSeconds(itemCount, sortedSearchSeconds) {
-  // Sorted search is treated as O(1): fixed small time per item.
-  // Each found item is also removed, but access remains constant-time.
   return itemCount * sortedSearchSeconds;
 }
 
@@ -2795,21 +2823,7 @@ function calculateSortingSeconds(itemCount, secondsPerItemLog) {
   return itemCount * Math.log2(itemCount) * secondsPerItemLog;
 }
 
-function findKDBreakEven(settings) {
-  for (let itemCount = 1; itemCount <= 100; itemCount++) {
-    const kd = {
-      id: "TEST",
-      items: Array.from({ length: itemCount }, (_, index) => ({
-        code: `ITM-${index}`,
-        name: `Item ${index}`
-      }))
-    };
-
-    const result = calculateSingleKD(kd, settings);
-    if (result.savedSeconds > 0) {
-      return itemCount;
-    }
-  }
+function findKDBreakEven() {
   return null;
 }
 
